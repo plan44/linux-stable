@@ -39,7 +39,7 @@
 
 #define GPIO_MAX_PINS	(32)
 
-#define P44_DEBUG_ENABLED 1
+#define P44_DEBUG_ENABLED 0
 #if P44_DEBUG_ENABLED
 #define P44_DEBUG(dev, msg, ...) dev_info(dev, msg, ##__VA_ARGS__)
 #else

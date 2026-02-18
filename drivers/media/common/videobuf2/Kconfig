@@ -26,6 +26,10 @@ config VIDEOBUF2_DMA_SG
 	tristate
 	select VIDEOBUF2_CORE
 	select VIDEOBUF2_MEMOPS
+	# Some capture engines require physically contiguous buffers when no IOMMU
+	# is present. Keep the dma-contig allocator available whenever dma-sg is in
+	# use so out-of-tree drivers can switch memops at runtime.
+	select VIDEOBUF2_DMA_CONTIG
 
 config VIDEOBUF2_DVB
 	tristate

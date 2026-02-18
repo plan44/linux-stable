@@ -16,6 +16,16 @@
 #include "dw_mmc-pltfm.h"
 
 #define RK3288_CLKGEN_DIV	2
+#define USRID_INTER_PHASE	0x20230001
+#define SDMMC_TIMING_CON0	0x130
+#define SDMMC_TIMING_CON1	0x134
+#define ROCKCHIP_MMC_DELAY_SEL	BIT(10)
+#define ROCKCHIP_MMC_DEGREE_MASK 0x3
+#define ROCKCHIP_MMC_DELAYNUM_OFFSET 2
+#define ROCKCHIP_MMC_DELAYNUM_MASK (0xff << ROCKCHIP_MMC_DELAYNUM_OFFSET)
+#define ROCKCHIP_MMC_DELAY_ELEMENT_PSEC 60
+#define HIWORD_UPDATE(val, mask, shift) \
+		((val) << (shift) | (mask) << ((shift) + 16))
 
 static const unsigned int freqs[] = { 100000, 200000, 300000, 400000 };
 
@@ -24,7 +34,107 @@ struct dw_mci_rockchip_priv_data {
 	struct clk		*sample_clk;
 	int			default_sample_phase;
 	int			num_phases;
+	u32			usrid;
+	bool			use_internal_phase;
+	bool			sample_phase_msg_printed;
 };
+
+static int rockchip_mmc_set_phase(struct dw_mci *host, bool sample, int degrees)
+{
+	unsigned long rate = clk_get_rate(host->ciu_clk) / RK3288_CLKGEN_DIV;
+	u8 nineties, remainder;
+	u8 delay_num;
+	u32 raw_value;
+	u32 delay;
+
+	if (!rate)
+		return -EINVAL;
+
+	degrees %= 360;
+	if (degrees < 0)
+		degrees += 360;
+
+	nineties = degrees / 90;
+	remainder = degrees % 90;
+
+	delay = 10000000; /* PSECS_PER_SEC / 10000 / 10 */
+	delay *= remainder;
+	delay = DIV_ROUND_CLOSEST(delay,
+			(rate / 1000) * 36 *
+				(ROCKCHIP_MMC_DELAY_ELEMENT_PSEC / 10));
+
+	delay_num = (u8)min_t(u32, delay, 255);
+
+	raw_value = delay_num ? ROCKCHIP_MMC_DELAY_SEL : 0;
+	raw_value |= delay_num << ROCKCHIP_MMC_DELAYNUM_OFFSET;
+	raw_value |= (nineties & ROCKCHIP_MMC_DEGREE_MASK);
+
+	if (sample)
+		mci_writel(host, TIMING_CON1, HIWORD_UPDATE(raw_value, 0x07ff, 1));
+	else
+		mci_writel(host, TIMING_CON0, HIWORD_UPDATE(raw_value, 0x07ff, 1));
+
+	return 0;
+}
+
+static void dw_mci_rk3288_set_sample_phase(struct dw_mci *host,
+					    struct mmc_ios *ios)
+{
+	struct dw_mci_rockchip_priv_data *priv = host->priv;
+	struct clk *sample_clk = priv->sample_clk;
+	int sample_phase = priv->default_sample_phase;
+	int ret;
+
+	if (ios->timing > MMC_TIMING_SD_HS)
+		return;
+
+	if (priv->use_internal_phase) {
+		ret = rockchip_mmc_set_phase(host, true, sample_phase);
+		if (ret) {
+			if (!priv->sample_phase_msg_printed) {
+				dev_warn(host->dev,
+					 "failed to set sample phase %d (internal): %d\n",
+					 sample_phase, ret);
+				priv->sample_phase_msg_printed = true;
+			}
+			return;
+		}
+
+		if (!priv->sample_phase_msg_printed) {
+			dev_info(host->dev, "sample phase set to %d (internal)\n",
+				 sample_phase);
+			priv->sample_phase_msg_printed = true;
+		}
+		return;
+	}
+
+	if (IS_ERR(sample_clk)) {
+		if (!priv->sample_phase_msg_printed) {
+			dev_warn(host->dev,
+				 "sample phase %d requested but ciu-sample clock is unavailable\n",
+				 sample_phase);
+			priv->sample_phase_msg_printed = true;
+		}
+		return;
+	}
+
+	ret = clk_set_phase(sample_clk, sample_phase);
+	if (ret) {
+		if (!priv->sample_phase_msg_printed) {
+			dev_warn(host->dev,
+				 "failed to set sample phase %d (ciu-sample): %d\n",
+				 sample_phase, ret);
+			priv->sample_phase_msg_printed = true;
+		}
+		return;
+	}
+
+	if (!priv->sample_phase_msg_printed) {
+		dev_info(host->dev, "sample phase set to %d (ciu-sample)\n",
+			 sample_phase);
+		priv->sample_phase_msg_printed = true;
+	}
+}
 
 static void dw_mci_rk3288_set_ios(struct dw_mci *host, struct mmc_ios *ios)
 {
@@ -62,9 +172,7 @@ static void dw_mci_rk3288_set_ios(struct dw_mci *host, struct mmc_ios *ios)
 		host->current_speed = 0;
 	}
 
-	/* Make sure we use phases which we can enumerate with */
-	if (!IS_ERR(priv->sample_clk) && ios->timing <= MMC_TIMING_SD_HS)
-		clk_set_phase(priv->sample_clk, priv->default_sample_phase);
+	dw_mci_rk3288_set_sample_phase(host, ios);
 
 	/*
 	 * Set the drive phase offset based on speed mode to achieve hold times.
@@ -92,7 +200,7 @@ static void dw_mci_rk3288_set_ios(struct dw_mci *host, struct mmc_ios *ios)
 	 * (the 1.4 ns assumed by the DesignWare Databook would result in the
 	 * same results, for instance).
 	 */
-	if (!IS_ERR(priv->drv_clk)) {
+	{
 		int phase;
 
 		/*
@@ -127,7 +235,10 @@ static void dw_mci_rk3288_set_ios(struct dw_mci *host, struct mmc_ios *ios)
 			break;
 		}
 
-		clk_set_phase(priv->drv_clk, phase);
+		if (priv->use_internal_phase)
+			rockchip_mmc_set_phase(host, false, phase);
+		else if (!IS_ERR(priv->drv_clk))
+			clk_set_phase(priv->drv_clk, phase);
 	}
 }
 
@@ -292,6 +403,7 @@ static int dw_mci_rk3288_parse_dt(struct dw_mci *host)
 
 static int dw_mci_rockchip_init(struct dw_mci *host)
 {
+	struct dw_mci_rockchip_priv_data *priv = host->priv;
 	int ret, i;
 
 	/* It is slot 8 on Rockchip SoCs */
@@ -315,6 +427,11 @@ static int dw_mci_rockchip_init(struct dw_mci *host)
 		if (ret < 0)
 			dev_warn(host->dev, "no valid minimum freq: %d\n", ret);
 	}
+
+	priv->usrid = mci_readl(host, USRID);
+	priv->use_internal_phase = (priv->usrid == USRID_INTER_PHASE);
+	if (priv->use_internal_phase)
+		dev_info(host->dev, "using internal phase registers\n");
 
 	return 0;
 }

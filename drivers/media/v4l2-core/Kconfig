@@ -11,6 +11,9 @@ config VIDEO_V4L2_I2C
 config VIDEO_V4L2_SUBDEV_API
 	bool
 	depends on VIDEO_DEV && MEDIA_CONTROLLER
+	default y
+	select V4L2_ASYNC
+	select V4L2_FWNODE
 	help
 	  Enables the V4L2 sub-device pad-level userspace API used to configure
 	  video format, size and frame rate between hardware blocks.
