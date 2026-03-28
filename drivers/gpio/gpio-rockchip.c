@@ -39,14 +39,6 @@
 
 #define GPIO_MAX_PINS	(32)
 
-#define P44_DEBUG_ENABLED 0
-#if P44_DEBUG_ENABLED
-#define P44_DEBUG(dev, msg, ...) dev_info(dev, msg, ##__VA_ARGS__)
-#else
-#define P44_DEBUG(dev, msg, ...)
-#endif
-
-
 static const struct rockchip_gpio_regs gpio_regs_v1 = {
 	.port_dr = 0x00,
 	.port_ddr = 0x04,
@@ -95,7 +87,6 @@ static inline void rockchip_gpio_writel(struct rockchip_pin_bank *bank,
 {
 	void __iomem *reg = bank->reg_base + offset;
 
-	P44_DEBUG(bank->dev, "rockchip_gpio_writel: type=0x%x, bank=%s, offset=%d, reg=0x%px := 0x%x", bank->gpio_type, bank->name, offset, reg, value);
 	if (bank->gpio_type == GPIO_TYPE_V2)
 		gpio_writel_v2(value, reg);
 	else
@@ -112,7 +103,6 @@ static inline u32 rockchip_gpio_readl(struct rockchip_pin_bank *bank,
 		value = gpio_readl_v2(reg);
 	else
 		value = readl(reg);
-	P44_DEBUG(bank->dev, "rockchip_gpio_writel: type=0x%x, bank=%s, offset=%d, reg=0x%px -> 0x%x", bank->gpio_type, bank->name, offset, reg, value);
 
 	return value;
 }
@@ -124,7 +114,6 @@ static inline void rockchip_gpio_writel_bit(struct rockchip_pin_bank *bank,
 	void __iomem *reg = bank->reg_base + offset;
 	u32 data;
 
-	P44_DEBUG(bank->dev, "rockchip_gpio_writel_bit: type=0x%x, bank=%s, offset=%d, reg=0x%px, bit=%d := %d", bank->gpio_type, bank->name, offset, reg, bit, value);
 	if (bank->gpio_type == GPIO_TYPE_V2) {
 		if (value)
 			data = BIT(bit % 16) | BIT(bit % 16 + 16);
@@ -153,7 +142,6 @@ static inline u32 rockchip_gpio_readl_bit(struct rockchip_pin_bank *bank,
 		data = readl(reg);
 		data >>= bit;
 	}
-	P44_DEBUG(bank->dev, "rockchip_gpio_readl_bit: type=0x%x, bank=%s, offset=%d, reg=0x%px, bit=%d -> %d", bank->gpio_type, bank->name, offset, reg, bit, data&0x1);
 
 	return data & (0x1);
 }
