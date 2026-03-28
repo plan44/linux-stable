@@ -41,13 +41,6 @@
 #include "pinconf.h"
 #include "pinctrl-rockchip.h"
 
-#define P44_DEBUG_ENABLED 1
-#if P44_DEBUG_ENABLED
-#define P44_DEBUG(dev, msg, ...) dev_info(dev, msg, ##__VA_ARGS__)
-#else
-#define P44_DEBUG(dev, msg, ...)
-#endif
-
 /*
  * Generate a bitmask for setting a value (v) with a write mask bit in hiword
  * register 31:16 area.
@@ -1208,8 +1201,6 @@ static int rockchip_get_mux(struct rockchip_pin_bank *bank, int pin)
 	if (ret)
 		return ret;
 
-	P44_DEBUG(bank->dev, "rockchip_get_mux: bank=%s, pin=%d, reg=0x%x, mux -> %d (regval=0x%x)\n", bank->name, pin, reg, (val >> bit) & mask, val);
-
 	return ((val >> bit) & mask);
 }
 
@@ -1298,8 +1289,6 @@ static int rockchip_set_mux(struct rockchip_pin_bank *bank, int pin, int mux)
 		bit = (pin % 8) * 2;
 		mask = 0x3;
 	}
-
-	P44_DEBUG(bank->dev, "rockchip_set_mux: bank=%s, pin=%d, reg=0x%x, mux := %d\n", bank->name, pin, reg, mux);
 
 	if (bank->recalced_mask & BIT(pin))
 		rockchip_get_recalced_mux(bank, pin, &reg, &bit, &mask);
@@ -3954,8 +3943,6 @@ static int rockchip_pinconf_set(struct pinctrl_dev *pctldev, unsigned int pin,
 		param = pinconf_to_config_param(configs[i]);
 		arg = pinconf_to_config_argument(configs[i]);
 
-  	P44_DEBUG(bank->dev, "rockchip_pinconf_set: i=%d, bank=%s, pin=%d, param=%d, arg=0x%x", i, bank->name, pin, (int)param, arg);
-
 		if (param == PIN_CONFIG_OUTPUT || param == PIN_CONFIG_INPUT_ENABLE) {
 			/*
 			 * Check for gpio driver not being probed yet.
@@ -4136,8 +4123,6 @@ static int rockchip_pinconf_get(struct pinctrl_dev *pctldev, unsigned int pin,
 	}
 
 	*config = pinconf_to_config_packed(param, arg);
-
-	P44_DEBUG(bank->dev, "rockchip_pinconf_get: bank=%s, pin=%d, config := 0x%lx", bank->name, pin, *config);
 
 	return 0;
 }
@@ -5547,8 +5532,6 @@ int rk_iomux_set(int bank, int pin, int mux)
 
 	gpio = &info->ctrl->pin_banks[bank];
 
-	P44_DEBUG(gpio->dev, "rk_iomux_set: bank=%s, pin=%d, mux := 0x%x", gpio->name, pin, mux);
-
 	mutex_lock(&iomux_lock);
 	for (i = 0; i < info->ngroups; i++) {
 		grp = &info->groups[i];
@@ -5611,8 +5594,6 @@ int rk_iomux_get(int bank, int pin, int *mux)
 	mutex_unlock(&iomux_lock);
 
 	*mux = ret;
-
-	P44_DEBUG(gpio->dev, "rk_iomux_get: bank=%s, pin=%d, mux -> 0x%x", gpio->name, pin, ret);
 
 	return (ret >= 0) ? 0 : ret;
 }
