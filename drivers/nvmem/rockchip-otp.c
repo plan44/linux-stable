@@ -743,6 +743,7 @@ static struct nvmem_config otp_config = {
 	.read_only = true,
 	.reg_read = rockchip_otp_read,
 	.reg_write = rockchip_otp_write,
+	.add_legacy_fixed_of_cells = true,
 	.stride = 1,
 	.word_size = 1,
 };
