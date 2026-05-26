@@ -1122,6 +1122,28 @@ static const struct vop_data rk3328_vop = {
 	.max_output = { 4096, 2160 },
 };
 
+/*
+ * RV1106 VOP. The IP is functionally identical to PX30's "lit" VOP variant
+ * (which is itself the same IP as RK3366-LIT in the vendor SDK) -- register
+ * addresses, interrupt layout, and single-primary-window structure all match,
+ * so we reuse PX30's per-block tables verbatim. RV1106-specific bits from the
+ * vendor 5.10 source are: a different VOP_VERSION (2, 0xc), a smaller native
+ * resolution cap (1280x1280), and a GRF-driven dclk-inversion knob. The GRF
+ * knob has no 6.6 equivalent (struct vop_data lost grf_ctrl), so we skip it;
+ * it can be re-added via a driver-core change later if a board needs it.
+ */
+static const struct vop_data rv1106_vop = {
+	.version = VOP_VERSION(2, 0xc),
+	.intr = &px30_intr,
+	.feature = VOP_FEATURE_INTERNAL_RGB,
+	.common = &px30_common,
+	.modeset = &px30_modeset,
+	.output = &px30_output,
+	.win = px30_vop_lit_win_data,
+	.win_size = ARRAY_SIZE(px30_vop_lit_win_data),
+	.max_output = { 1280, 1280 },
+};
+
 static const struct of_device_id vop_driver_dt_match[] = {
 	{ .compatible = "rockchip,rk3036-vop",
 	  .data = &rk3036_vop },
@@ -1149,6 +1171,8 @@ static const struct of_device_id vop_driver_dt_match[] = {
 	  .data = &rk3228_vop },
 	{ .compatible = "rockchip,rk3328-vop",
 	  .data = &rk3328_vop },
+	{ .compatible = "rockchip,rv1106-vop",
+	  .data = &rv1106_vop },
 	{},
 };
 MODULE_DEVICE_TABLE(of, vop_driver_dt_match);
