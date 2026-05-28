@@ -59,17 +59,28 @@ rockchip_rgb_encoder_atomic_check(struct drm_encoder *encoder,
 	else
 		bus_format = MEDIA_BUS_FMT_RGB888_1X24;
 
+	/*
+	 * output_bpc gates the dither-down stage in vop_crtc_atomic_enable
+	 * (it computes dither_bpc = output_bpc ? : 10 and only enables dither
+	 * when that is 6). Mainline sets output_bpc only on the eDP path, so a
+	 * raw-RGB panel kept out_mode=P666 with the 24->18-bit dither block
+	 * disabled and the parallel output was truncated, not reduced. Set it
+	 * from the bus format so the dither stage matches the panel depth.
+	 */
 	switch (bus_format) {
 	case MEDIA_BUS_FMT_RGB666_1X18:
 		s->output_mode = ROCKCHIP_OUT_MODE_P666;
+		s->output_bpc = 6;
 		break;
 	case MEDIA_BUS_FMT_RGB565_1X16:
 		s->output_mode = ROCKCHIP_OUT_MODE_P565;
+		s->output_bpc = 5;
 		break;
 	case MEDIA_BUS_FMT_RGB888_1X24:
 	case MEDIA_BUS_FMT_RGB666_1X24_CPADHI:
 	default:
 		s->output_mode = ROCKCHIP_OUT_MODE_P888;
+		s->output_bpc = 8;
 		break;
 	}
 
