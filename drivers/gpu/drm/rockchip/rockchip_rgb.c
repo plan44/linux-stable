@@ -7,7 +7,9 @@
 
 #include <linux/component.h>
 #include <linux/media-bus-format.h>
+#include <linux/mfd/syscon.h>
 #include <linux/of_graph.h>
+#include <linux/regmap.h>
 
 #include <drm/display/drm_dp_helper.h>
 #include <drm/drm_atomic_helper.h>
@@ -20,6 +22,18 @@
 
 #include "rockchip_drm_drv.h"
 #include "rockchip_rgb.h"
+
+/*
+ * RV1106 routes the VOP's parallel-RGB output through two GRF "bypass"
+ * gates that come up enabled at reset. The vendor 5.10 rgb driver
+ * clears them (HIWORD write, bits[1:0]=0) on enable; mainline's
+ * rockchip_rgb is a stripped library that never touches the GRF, so on
+ * a fresh boot the data path stays in bypass and the panel shows
+ * corrupted output. Clear both gates for the RGB use case.
+ */
+#define RV1106_VENC_GRF_VOP_IO_WRAPPER	0x1000c
+#define RV1106_VOGRF_VOP_PIPE_BYPASS	0x60034
+#define RV1106_GRF_BYPASS_CLEAR		(0x3 << 16) /* mask bits[1:0], value 0 */
 
 struct rockchip_rgb {
 	struct device *dev;
@@ -166,6 +180,30 @@ struct rockchip_rgb *rockchip_rgb_init(struct device *dev,
 		DRM_DEV_ERROR(drm_dev->dev,
 			      "failed to attach encoder: %d\n", ret);
 		goto err_free_connector;
+	}
+
+	/*
+	 * RV1106: take the VOP->RGB IO wrapper and VOP pipe out of bypass.
+	 * These GRF gates reset to "bypass" and mainline never clears them,
+	 * leaving the parallel-RGB data path corrupted. Guarded on the GRF
+	 * being the rv1106 grf so this is a no-op on other SoCs.
+	 */
+	{
+		struct device_node *grf_np;
+		struct regmap *grf;
+
+		grf_np = of_parse_phandle(dev->of_node, "rockchip,grf", 0);
+		if (grf_np && of_device_is_compatible(grf_np, "rockchip,rv1106-grf")) {
+			grf = syscon_node_to_regmap(grf_np);
+			if (!IS_ERR(grf)) {
+				regmap_write(grf, RV1106_VENC_GRF_VOP_IO_WRAPPER,
+					     RV1106_GRF_BYPASS_CLEAR);
+				regmap_write(grf, RV1106_VOGRF_VOP_PIPE_BYPASS,
+					     RV1106_GRF_BYPASS_CLEAR);
+				DRM_DEV_INFO(dev, "rv1106: cleared VOP RGB bypass gates\n");
+			}
+		}
+		of_node_put(grf_np);
 	}
 
 	return rgb;
