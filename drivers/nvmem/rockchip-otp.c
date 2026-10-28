@@ -12,6 +12,7 @@
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/nvmem-provider.h>
 #include <linux/reset.h>
 #include <linux/slab.h>
@@ -86,6 +87,7 @@ struct rockchip_otp {
 	struct clk_bulk_data *clks;
 	struct reset_control *rst;
 	const struct rockchip_data *data;
+	struct mutex mutex;
 };
 
 static int rockchip_otp_reset(struct rockchip_otp *otp)
@@ -256,10 +258,11 @@ static int rv1103b_otp_read(void *context, unsigned int offset, void *val,
 	u32 otp_qp;
 	int ret;
 
+	mutex_lock(&otp->mutex);
 	ret = rockchip_otp_ecc_enable(otp, true);
 	if (ret) {
 		dev_err(otp->dev, "failed to enable otp ECC\n");
-		return ret;
+		goto unlock;
 	}
 
 	writel(OTPC_USE_USER | OTPC_USE_USER_MASK, otp->base + OTPC_USER_CTRL);
@@ -294,6 +297,8 @@ read_end:
 		writel(OTPC_LOCK_MASK, otp->base + OTPC_LOCK_CTRL);
 	writel(OTPC_USE_USER_MASK, otp->base + OTPC_USER_CTRL);
 
+unlock:
+	mutex_unlock(&otp->mutex);
 	return ret;
 }
 
@@ -503,6 +508,7 @@ static int rockchip_otp_probe(struct platform_device *pdev)
 
 	otp->data = data;
 	otp->dev = dev;
+	mutex_init(&otp->mutex);
 	otp->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(otp->base))
 		return dev_err_probe(dev, PTR_ERR(otp->base),
