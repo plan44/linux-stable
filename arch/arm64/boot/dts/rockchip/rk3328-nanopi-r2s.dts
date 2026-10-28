@@ -6,6 +6,7 @@
 /dts-v1/;
 
 #include <dt-bindings/input/input.h>
+#include <dt-bindings/leds/common.h>
 #include <dt-bindings/gpio/gpio.h>
 #include "rk3328.dtsi"
 
@@ -17,6 +18,11 @@
 		ethernet0 = &gmac2io;
 		ethernet1 = &rtl8153;
 		mmc0 = &sdmmc;
+
+		led-boot = &sys_led;
+		led-failsafe = &sys_led;
+		led-running = &sys_led;
+		led-upgrade = &sys_led;
 	};
 
 	chosen {
@@ -49,19 +55,22 @@
 		pinctrl-names = "default";
 
 		lan_led: led-0 {
+			color = <LED_COLOR_ID_GREEN>;
+			function = LED_FUNCTION_LAN;
 			gpios = <&gpio2 RK_PB7 GPIO_ACTIVE_HIGH>;
-			label = "nanopi-r2s:green:lan";
 		};
 
 		sys_led: led-1 {
+			color = <LED_COLOR_ID_RED>;
+			function = LED_FUNCTION_STATUS;
 			gpios = <&gpio0 RK_PA2 GPIO_ACTIVE_HIGH>;
-			label = "nanopi-r2s:red:sys";
 			default-state = "on";
 		};
 
 		wan_led: led-2 {
+			color = <LED_COLOR_ID_GREEN>;
+			function = LED_FUNCTION_WAN;
 			gpios = <&gpio2 RK_PC2 GPIO_ACTIVE_HIGH>;
-			label = "nanopi-r2s:green:wan";
 		};
 	};
 
@@ -398,6 +407,7 @@
 	rtl8153: device@2 {
 		compatible = "usbbda,8153";
 		reg = <2>;
+		realtek,led-data = <0x87>;
 	};
 };
 

@@ -9,6 +9,10 @@
 
 	aliases {
 		mmc1 = &sdmmc0;
+		led-boot = &led_user;
+		led-failsafe = &led_user;
+		led-running = &led_user;
+		led-upgrade = &led_user;
 	};
 
 	pwm-leds {

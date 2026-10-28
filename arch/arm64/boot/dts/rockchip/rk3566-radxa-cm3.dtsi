@@ -17,7 +17,7 @@
 	leds {
 		compatible = "gpio-leds";
 
-		led-0 {
+		status_led: led-0 {
 			gpios = <&gpio0 RK_PA6 GPIO_ACTIVE_HIGH>;
 			color = <LED_COLOR_ID_GREEN>;
 			function = LED_FUNCTION_STATUS;

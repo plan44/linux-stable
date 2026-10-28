@@ -159,8 +159,8 @@ static inline bool dev_xmit_complete(int rc)
 
 #if defined(CONFIG_HYPERV_NET)
 # define LL_MAX_HEADER 128
-#elif defined(CONFIG_WLAN) || IS_ENABLED(CONFIG_AX25)
-# if defined(CONFIG_MAC80211_MESH)
+#elif defined(CONFIG_WLAN) || IS_ENABLED(CONFIG_AX25) || 1
+# if defined(CONFIG_MAC80211_MESH) || 1
 #  define LL_MAX_HEADER 128
 # else
 #  define LL_MAX_HEADER 96
@@ -1691,6 +1691,7 @@ enum netdev_priv_flags {
 	IFF_L3MDEV_RX_HANDLER		= 1<<29,
 	IFF_NO_ADDRCONF			= BIT_ULL(30),
 	IFF_TX_SKB_NO_LINEAR		= BIT_ULL(31),
+	IFF_NO_IP_ALIGN			= BIT_ULL(32),
 };
 
 /* Specifies the type of the struct net_device::ml_priv pointer */
@@ -2176,6 +2177,11 @@ struct net_device {
 	const struct tlsdev_ops *tlsdev_ops;
 #endif
 
+#ifdef CONFIG_ETHERNET_PACKET_MANGLE
+	void (*eth_mangle_rx)(struct net_device *dev, struct sk_buff *skb);
+	struct sk_buff *(*eth_mangle_tx)(struct net_device *dev, struct sk_buff *skb);
+#endif
+
 	unsigned int		operstate;
 	unsigned char		link_mode;
 
@@ -2232,7 +2238,7 @@ struct net_device {
 #if IS_ENABLED(CONFIG_AX25)
 	struct ax25_dev	__rcu	*ax25_ptr;
 #endif
-#if IS_ENABLED(CONFIG_CFG80211)
+#if IS_ENABLED(CONFIG_CFG80211_HEADERS)
 	struct wireless_dev	*ieee80211_ptr;
 #endif
 #if IS_ENABLED(CONFIG_IEEE802154) || IS_ENABLED(CONFIG_6LOWPAN)
@@ -2243,6 +2249,10 @@ struct net_device {
 #endif
 #if IS_ENABLED(CONFIG_MCTP)
 	struct mctp_dev __rcu	*mctp_ptr;
+#endif
+
+#ifdef CONFIG_ETHERNET_PACKET_MANGLE
+	void			*phy_ptr; /* PHY device specific data */
 #endif
 
 /*
@@ -2604,6 +2614,17 @@ void dev_net_set(struct net_device *dev, struct net *net)
 static inline void *netdev_priv(const struct net_device *dev)
 {
 	return (void *)dev->priv;
+}
+
+/**
+ * netdev_from_priv() - get network device from priv
+ * @priv: network device private data
+ *
+ * Returns: net_device to which @priv belongs
+ */
+static inline struct net_device *netdev_from_priv(const void *priv)
+{
+	return container_of(priv, struct net_device, priv);
 }
 
 /* Set the sysfs physical device reference for the network logical device

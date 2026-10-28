@@ -19,6 +19,7 @@
 
 #include <linux/io.h>
 #include <linux/clk-provider.h>
+#include <linux/hashtable.h>
 
 struct clk;
 
@@ -207,6 +208,29 @@ struct clk;
 #define RK3399_PMU_CLKGATE_CON(x)	((x) * 0x4 + 0x100)
 #define RK3399_PMU_SOFTRST_CON(x)	((x) * 0x4 + 0x110)
 
+#define RK3528_PMU_CRU_BASE		0x10000
+#define RK3528_PCIE_CRU_BASE		0x20000
+#define RK3528_DDRPHY_CRU_BASE		0x28000
+#define RK3528_PLL_CON(x)		RK2928_PLL_CON(x)
+#define RK3528_PCIE_PLL_CON(x)		((x) * 0x4 + RK3528_PCIE_CRU_BASE)
+#define RK3528_DDRPHY_PLL_CON(x)	((x) * 0x4 + RK3528_DDRPHY_CRU_BASE)
+#define RK3528_MODE_CON			0x280
+#define RK3528_CLKSEL_CON(x)		((x) * 0x4 + 0x300)
+#define RK3528_CLKGATE_CON(x)		((x) * 0x4 + 0x800)
+#define RK3528_SOFTRST_CON(x)		((x) * 0x4 + 0xa00)
+#define RK3528_SDMMC_CON(x)		((x) * 0x4 + 0x24)
+#define RK3528_SDIO0_CON(x)		((x) * 0x4 + 0x4)
+#define RK3528_SDIO1_CON(x)		((x) * 0x4 + 0xc)
+#define RK3528_PMU_CLKSEL_CON(x)	((x) * 0x4 + 0x300 + RK3528_PMU_CRU_BASE)
+#define RK3528_PMU_CLKGATE_CON(x)	((x) * 0x4 + 0x800 + RK3528_PMU_CRU_BASE)
+#define RK3528_PCIE_CLKSEL_CON(x)	((x) * 0x4 + 0x300 + RK3528_PCIE_CRU_BASE)
+#define RK3528_PCIE_CLKGATE_CON(x)	((x) * 0x4 + 0x800 + RK3528_PCIE_CRU_BASE)
+#define RK3528_DDRPHY_CLKGATE_CON(x)	((x) * 0x4 + 0x800 + RK3528_DDRPHY_CRU_BASE)
+#define RK3528_DDRPHY_MODE_CON		(0x280 + RK3528_DDRPHY_CRU_BASE)
+#define RK3528_GLB_CNT_TH		0xc00
+#define RK3528_GLB_SRST_FST		0xc08
+#define RK3528_GLB_SRST_SND		0xc0c
+
 #define RK3568_PLL_CON(x)		RK2928_PLL_CON(x)
 #define RK3568_MODE_CON0		0xc0
 #define RK3568_MISC_CON0		0xc4
@@ -381,12 +405,37 @@ enum rockchip_pll_type {
 	.k = _k,						\
 }
 
+enum rockchip_grf_type {
+	grf_type_sys = 0,
+	grf_type_pmu0,
+	grf_type_pmu1,
+	grf_type_ioc,
+	grf_type_vo,
+	grf_type_vpu,
+};
+
+/* ceil(sqrt(enums in rockchip_grf_type - 1)) */
+#define GRF_HASH_ORDER 2
+
+/**
+ * struct rockchip_aux_grf - entry for the aux_grf_table hashtable
+ * @grf: pointer to the grf this entry references
+ * @type: what type of GRF this is
+ * @node: hlist node
+ */
+struct rockchip_aux_grf {
+	struct regmap *grf;
+	enum rockchip_grf_type type;
+	struct hlist_node node;
+};
+
 /**
  * struct rockchip_clk_provider - information about clock provider
  * @reg_base: virtual address for the register base.
  * @clk_data: holds clock related data like clk* and number of clocks.
  * @cru_node: device-node of the clock-provider
  * @grf: regmap of the general-register-files syscon
+ * @aux_grf_table: hashtable of auxiliary GRF regmaps, indexed by grf_type
  * @lock: maintains exclusion between callbacks for a given clock-provider.
  */
 struct rockchip_clk_provider {
@@ -394,6 +443,7 @@ struct rockchip_clk_provider {
 	struct clk_onecell_data clk_data;
 	struct device_node *cru_node;
 	struct regmap *grf;
+	DECLARE_HASHTABLE(aux_grf_table, GRF_HASH_ORDER);
 	spinlock_t lock;
 };
 
@@ -444,6 +494,7 @@ struct rockchip_pll_rate_table {
  * Flags:
  * ROCKCHIP_PLL_SYNC_RATE - check rate parameters to match against the
  *	rate_table parameters and ajust them if necessary.
+ * ROCKCHIP_PLL_FIXED_MODE - the pll operates in normal mode only
  */
 struct rockchip_pll_clock {
 	unsigned int		id;
@@ -461,6 +512,7 @@ struct rockchip_pll_clock {
 };
 
 #define ROCKCHIP_PLL_SYNC_RATE		BIT(0)
+#define ROCKCHIP_PLL_FIXED_MODE		BIT(1)
 
 #define PLL(_type, _id, _name, _pnames, _flags, _con, _mode, _mshift,	\
 		_lshift, _pflags, _rtable)				\
@@ -533,7 +585,9 @@ struct clk *rockchip_clk_register_cpuclk(const char *name,
 
 struct clk *rockchip_clk_register_mmc(const char *name,
 				const char *const *parent_names, u8 num_parents,
-				void __iomem *reg, int shift);
+				void __iomem *reg,
+				struct regmap *grf, int grf_reg,
+				int shift);
 
 /*
  * DDRCLK flags, including method of setting the rate
@@ -561,6 +615,11 @@ struct clk *rockchip_clk_register_muxgrf(const char *name,
 				int flags, struct regmap *grf, int reg,
 				int shift, int width, int mux_flags);
 
+struct clk *rockchip_clk_register_gate_grf(const char *name,
+				const char *parent_name, unsigned long flags,
+				struct regmap *regmap, unsigned int reg,
+				unsigned int shift, u8 gate_flags);
+
 #define PNAME(x) static const char *const x[] __initconst
 
 enum rockchip_clk_branch_type {
@@ -570,7 +629,10 @@ enum rockchip_clk_branch_type {
 	branch_divider,
 	branch_fraction_divider,
 	branch_gate,
+	branch_grf_gate,
+	branch_linked_gate,
 	branch_mmc,
+	branch_grf_mmc,
 	branch_inverter,
 	branch_factor,
 	branch_ddrclk,
@@ -597,6 +659,8 @@ struct rockchip_clk_branch {
 	int				gate_offset;
 	u8				gate_shift;
 	u8				gate_flags;
+	unsigned int			linked_clk_id;
+	enum rockchip_grf_type		grf_type;
 	struct rockchip_clk_branch	*child;
 };
 
@@ -837,7 +901,7 @@ struct rockchip_clk_branch {
 		.mux_table	= mt,				\
 	}
 
-#define MUXGRF(_id, cname, pnames, f, o, s, w, mf)		\
+#define MUXGRF(_id, cname, pnames, f, o, s, w, mf, gt)		\
 	{							\
 		.id		= _id,				\
 		.branch_type	= branch_muxgrf,		\
@@ -850,6 +914,7 @@ struct rockchip_clk_branch {
 		.mux_width	= w,				\
 		.mux_flags	= mf,				\
 		.gate_offset	= -1,				\
+		.grf_type	= gt,				\
 	}
 
 #define DIV(_id, cname, pname, f, o, s, w, df)			\
@@ -895,6 +960,34 @@ struct rockchip_clk_branch {
 		.gate_flags	= gf,				\
 	}
 
+#define GATE_GRF(_id, cname, pname, f, o, b, gf, gt)		\
+	{							\
+		.id		= _id,				\
+		.branch_type	= branch_grf_gate,		\
+		.name		= cname,			\
+		.parent_names	= (const char *[]){ pname },	\
+		.num_parents	= 1,				\
+		.flags		= f,				\
+		.gate_offset	= o,				\
+		.gate_shift	= b,				\
+		.gate_flags	= gf,				\
+		.grf_type	= gt,				\
+	}
+
+#define GATE_LINK(_id, cname, pname, linkedclk, f, o, b, gf)	\
+	{							\
+		.id		= _id,				\
+		.branch_type	= branch_linked_gate,		\
+		.name		= cname,			\
+		.parent_names	= (const char *[]){ pname },	\
+		.linked_clk_id	= linkedclk,			\
+		.num_parents	= 1,				\
+		.flags		= f,				\
+		.gate_offset	= o,				\
+		.gate_shift	= b,				\
+		.gate_flags	= gf,				\
+	}
+
 #define MMC(_id, cname, pname, offset, shift)			\
 	{							\
 		.id		= _id,				\
@@ -904,6 +997,18 @@ struct rockchip_clk_branch {
 		.num_parents	= 1,				\
 		.muxdiv_offset	= offset,			\
 		.div_shift	= shift,			\
+	}
+
+#define MMC_GRF(_id, cname, pname, offset, shift, grftype)	\
+	{							\
+		.id		= _id,				\
+		.branch_type	= branch_grf_mmc,		\
+		.name		= cname,			\
+		.parent_names	= (const char *[]){ pname },	\
+		.num_parents	= 1,				\
+		.muxdiv_offset	= offset,			\
+		.div_shift	= shift,			\
+		.grf_type	= grftype,			\
 	}
 
 #define INVERTER(_id, cname, pname, io, is, if)			\
@@ -1022,8 +1127,28 @@ struct rockchip_clk_branch {
 #define SGRF_GATE(_id, cname, pname)				\
 		FACTOR(_id, cname, pname, 0, 1, 1)
 
+static inline struct clk *rockchip_clk_get_lookup(struct rockchip_clk_provider *ctx,
+						  unsigned int id)
+{
+	return ctx->clk_data.clks[id];
+}
+
+static inline void rockchip_clk_set_lookup(struct rockchip_clk_provider *ctx,
+					   struct clk *clk, unsigned int id)
+{
+	ctx->clk_data.clks[id] = clk;
+}
+
+struct rockchip_gate_link_platdata {
+	struct rockchip_clk_provider *ctx;
+	struct rockchip_clk_branch *clkbr;
+};
+
 struct rockchip_clk_provider *rockchip_clk_init(struct device_node *np,
 			void __iomem *base, unsigned long nr_clks);
+struct rockchip_clk_provider *rockchip_clk_init_early(struct device_node *np,
+			void __iomem *base, unsigned long nr_clks);
+void rockchip_clk_finalize(struct rockchip_clk_provider *ctx);
 void rockchip_clk_of_add_provider(struct device_node *np,
 				struct rockchip_clk_provider *ctx);
 unsigned long rockchip_clk_find_max_clk_id(struct rockchip_clk_branch *list,
@@ -1031,6 +1156,10 @@ unsigned long rockchip_clk_find_max_clk_id(struct rockchip_clk_branch *list,
 void rockchip_clk_register_branches(struct rockchip_clk_provider *ctx,
 				    struct rockchip_clk_branch *list,
 				    unsigned int nr_clk);
+void rockchip_clk_register_late_branches(struct device *dev,
+					 struct rockchip_clk_provider *ctx,
+					 struct rockchip_clk_branch *list,
+					 unsigned int nr_clk);
 void rockchip_clk_register_plls(struct rockchip_clk_provider *ctx,
 				struct rockchip_pll_clock *pll_list,
 				unsigned int nr_pll, int grf_lock_offset);
@@ -1078,6 +1207,7 @@ static inline void rockchip_register_softrst(struct device_node *np,
 	return rockchip_register_softrst_lut(np, NULL, num_regs, base, flags);
 }
 
+void rk3528_rst_init(struct device_node *np, void __iomem *reg_base);
 void rk3576_rst_init(struct device_node *np, void __iomem *reg_base);
 void rk3588_rst_init(struct device_node *np, void __iomem *reg_base);
 
