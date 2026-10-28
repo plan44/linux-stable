@@ -859,6 +859,7 @@ config SPI_ROCKCHIP_SFC
 	tristate "Rockchip Serial Flash Controller (SFC)"
 	depends on ARCH_ROCKCHIP || COMPILE_TEST
 	depends on HAS_IOMEM && HAS_DMA
+	select MFD_SYSCON
 	help
 	  This enables support for Rockchip serial flash controller. This
 	  is a specialized controller used to access SPI flash on some

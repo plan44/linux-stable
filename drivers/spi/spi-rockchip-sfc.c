@@ -14,6 +14,8 @@
 #include <linux/dma-mapping.h>
 #include <linux/iopoll.h>
 #include <linux/mm.h>
+#include <linux/mfd/syscon.h>
+#include <linux/regmap.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
@@ -110,6 +112,11 @@
 #define  SFC_VER_3			0x3
 #define  SFC_VER_4			0x4
 #define  SFC_VER_5			0x5
+#define  SFC_VER_8			0x8
+
+#define SFC_EXT_CTRL			0x34
+#define SFC_SCLK_X2_BYPASS		BIT(24)
+#define SFC_CS_REG_STRIDE		0x200
 
 /* Delay line controller resiter */
 #define SFC_DLL_CTRL0			0x3C
@@ -169,6 +176,13 @@
  */
 #define SFC_MAX_SPEED		(150 * 1000 * 1000)
 
+#define SFC_DLL_THRESHOLD_RATE		50000000
+#define SFC_DLL_TRAINING_STEP		10
+#define SFC_DLL_VALID_WINDOW		80
+#define RV1103B_SFC_NUM_CS		2
+#define RV1103B_POWERGOOD_OFFSET		0x60030
+#define RV1103B_POWERGOOD_MASK		BIT(3)
+
 struct rockchip_sfc {
 	struct device *dev;
 	void __iomem *regbase;
@@ -182,6 +196,13 @@ struct rockchip_sfc {
 	bool use_dma;
 	u32 max_iosize;
 	u16 version;
+	bool rv1103b;
+	bool sclk_x2_bypass;
+	struct regmap *grf;
+	u32 max_dll_cells;
+	u32 calibrated_frequency[RV1103B_SFC_NUM_CS];
+	u32 safe_frequency[RV1103B_SFC_NUM_CS];
+	u16 dll_cells[RV1103B_SFC_NUM_CS];
 };
 
 static int rockchip_sfc_reset(struct rockchip_sfc *sfc)
@@ -242,6 +263,10 @@ static int rockchip_sfc_init(struct rockchip_sfc *sfc)
 	rockchip_sfc_irq_mask(sfc, 0xFFFFFFFF);
 	if (rockchip_sfc_get_version(sfc) >= SFC_VER_4)
 		writel(SFC_LEN_CTRL_TRB_SEL, sfc->regbase + SFC_LEN_CTRL);
+	if (sfc->rv1103b && rockchip_sfc_get_version(sfc) >= SFC_VER_8 &&
+	    sfc->sclk_x2_bypass)
+		writel(readl(sfc->regbase + SFC_EXT_CTRL) | SFC_SCLK_X2_BYPASS,
+		       sfc->regbase + SFC_EXT_CTRL);
 
 	return 0;
 }
@@ -301,6 +326,10 @@ static int rockchip_sfc_xfer_setup(struct rockchip_sfc *sfc,
 				   u32 len)
 {
 	u32 ctrl = 0, cmd = 0;
+	u32 cs_offset = sfc->rv1103b ?
+		spi_get_chipselect(mem->spi, 0) * SFC_CS_REG_STRIDE : 0;
+	u32 voltage;
+	int ret;
 
 	/* set CMD */
 	cmd = op->cmd.opcode;
@@ -314,7 +343,7 @@ static int rockchip_sfc_xfer_setup(struct rockchip_sfc *sfc,
 			cmd |= SFC_CMD_ADDR_24BITS << SFC_CMD_ADDR_SHIFT;
 		} else {
 			cmd |= SFC_CMD_ADDR_XBITS << SFC_CMD_ADDR_SHIFT;
-			writel(op->addr.nbytes * 8 - 1, sfc->regbase + SFC_ABIT);
+			writel(op->addr.nbytes * 8 - 1, sfc->regbase + cs_offset + SFC_ABIT);
 		}
 
 		ctrl |= ((op->addr.buswidth >> 1) << SFC_CTRL_ADDR_BITS_SHIFT);
@@ -354,7 +383,15 @@ static int rockchip_sfc_xfer_setup(struct rockchip_sfc *sfc,
 	dev_dbg(sfc->dev, "sfc ctrl=%x cmd=%x addr=%llx len=%x\n",
 		ctrl, cmd, op->addr.val, len);
 
-	writel(ctrl, sfc->regbase + SFC_CTRL);
+	if (sfc->rv1103b) {
+		ret = regmap_read_poll_timeout(sfc->grf, RV1103B_POWERGOOD_OFFSET,
+					       voltage, voltage & RV1103B_POWERGOOD_MASK,
+					       1000, USEC_PER_SEC);
+		if (ret)
+			return dev_err_probe(sfc->dev, ret, "SFC power-good timeout\n");
+	}
+
+	writel(ctrl, sfc->regbase + cs_offset + SFC_CTRL);
 	writel(cmd, sfc->regbase + SFC_CMD);
 	if (op->addr.nbytes)
 		writel(op->addr.val, sfc->regbase + SFC_ADDR);
@@ -485,13 +522,158 @@ static int rockchip_sfc_xfer_done(struct rockchip_sfc *sfc, u32 timeout_us)
 	return ret;
 }
 
+static int rockchip_sfc_set_frequency(struct rockchip_sfc *sfc, u32 speed)
+{
+	unsigned long source_rate = speed;
+	int ret;
+
+	if (sfc->frequency == speed)
+		return 0;
+	if (sfc->version >= SFC_VER_8 && !sfc->sclk_x2_bypass)
+		source_rate *= 2;
+	ret = clk_set_rate(sfc->clk, source_rate);
+	if (!ret)
+		sfc->frequency = speed;
+	return ret;
+}
+
+static unsigned long rockchip_sfc_bus_rate(struct rockchip_sfc *sfc)
+{
+	unsigned long rate = clk_get_rate(sfc->clk);
+
+	if (sfc->version >= SFC_VER_8 && !sfc->sclk_x2_bypass)
+		rate /= 2;
+	return rate;
+}
+
+static void rockchip_sfc_set_delay(struct rockchip_sfc *sfc, u8 cs, u16 cells)
+{
+	u32 value = cells ? SFC_DLL_CTRL0_SCLK_SMP_DLL | cells : 0;
+
+	writel(value, sfc->regbase + cs * SFC_CS_REG_STRIDE + SFC_DLL_CTRL0);
+}
+
+/* Use PIO for the short read-ID operations that calibrate sampling delay. */
+static int rockchip_sfc_read_id(struct rockchip_sfc *sfc, struct spi_mem *mem, u8 *id)
+{
+	struct spi_mem_op op = SPI_MEM_OP(SPI_MEM_OP_CMD(0x9f, 1),
+					SPI_MEM_OP_NO_ADDR, SPI_MEM_OP_NO_DUMMY,
+					SPI_MEM_OP_DATA_IN(3, id, 1));
+	int ret;
+
+	ret = rockchip_sfc_xfer_setup(sfc, mem, &op, 3);
+	if (ret)
+		return ret;
+	ret = rockchip_sfc_xfer_data_poll(sfc, &op, 3);
+	if (ret != 3) {
+		rockchip_sfc_reset(sfc);
+		return ret < 0 ? ret : -EIO;
+	}
+	return rockchip_sfc_xfer_done(sfc, 100000);
+}
+
+static int rockchip_sfc_calibrate(struct rockchip_sfc *sfc, struct spi_mem *mem)
+{
+	u8 cs = spi_get_chipselect(mem->spi, 0);
+	u32 requested = mem->spi->max_speed_hz;
+	u8 reference[3], sample[3];
+	u16 cell, left = 0, right = 0;
+	bool valid = false;
+	int ret;
+
+	rockchip_sfc_set_delay(sfc, cs, 0);
+	ret = rockchip_sfc_set_frequency(sfc, SFC_DLL_THRESHOLD_RATE);
+	if (ret)
+		return ret;
+	ret = rockchip_sfc_read_id(sfc, mem, reference);
+	if (ret || (reference[0] == 0xff && reference[1] == 0xff) ||
+	    (!reference[0] && !reference[1]))
+		goto fallback;
+
+	ret = rockchip_sfc_set_frequency(sfc, requested);
+	if (ret)
+		return ret;
+
+	for (cell = 0; ; cell = min_t(u32, cell + SFC_DLL_TRAINING_STEP,
+				      sfc->max_dll_cells)) {
+		rockchip_sfc_set_delay(sfc, cs, cell);
+		ret = rockchip_sfc_read_id(sfc, mem, sample);
+		if (ret || memcmp(reference, sample, sizeof(reference))) {
+			if (valid)
+				break;
+		} else {
+			if (!valid)
+				left = cell;
+			right = cell;
+			valid = true;
+		}
+		if (cell == sfc->max_dll_cells)
+			break;
+	}
+
+	if (!valid || right - left < SFC_DLL_VALID_WINDOW)
+		goto fallback;
+
+	if (!left && right < sfc->max_dll_cells)
+		sfc->dll_cells[cs] = left + (right - left) * 2 / 5;
+	else
+		sfc->dll_cells[cs] = left + (right - left) / 2;
+	sfc->safe_frequency[cs] = requested;
+	rockchip_sfc_set_delay(sfc, cs, sfc->dll_cells[cs]);
+	return 0;
+
+fallback:
+	sfc->dll_cells[cs] = 0;
+	sfc->safe_frequency[cs] = SFC_DLL_THRESHOLD_RATE;
+	rockchip_sfc_set_delay(sfc, cs, 0);
+	dev_warn(sfc->dev, "SFC CS%u calibration failed, limiting to 50 MHz\n", cs);
+	return rockchip_sfc_set_frequency(sfc, SFC_DLL_THRESHOLD_RATE);
+}
+
+static int rockchip_sfc_prepare_clock(struct rockchip_sfc *sfc, struct spi_mem *mem)
+{
+	u8 cs = spi_get_chipselect(mem->spi, 0);
+	u32 requested = mem->spi->max_speed_hz;
+	int ret;
+
+	if (cs >= RV1103B_SFC_NUM_CS)
+		return -EINVAL;
+
+	if (sfc->calibrated_frequency[cs] == requested) {
+		ret = rockchip_sfc_set_frequency(sfc, sfc->safe_frequency[cs]);
+		if (!ret)
+			rockchip_sfc_set_delay(sfc, cs, sfc->dll_cells[cs]);
+		return ret;
+	}
+
+	ret = rockchip_sfc_set_frequency(sfc, requested);
+	if (ret)
+		return ret;
+	if (sfc->version >= SFC_VER_4 &&
+	    rockchip_sfc_bus_rate(sfc) > SFC_DLL_THRESHOLD_RATE) {
+		ret = rockchip_sfc_calibrate(sfc, mem);
+		if (ret)
+			return ret;
+	} else {
+		sfc->safe_frequency[cs] = requested;
+		sfc->dll_cells[cs] = 0;
+		rockchip_sfc_set_delay(sfc, cs, 0);
+	}
+	sfc->calibrated_frequency[cs] = requested;
+	return 0;
+}
+
 static int rockchip_sfc_exec_mem_op(struct spi_mem *mem, const struct spi_mem_op *op)
 {
 	struct rockchip_sfc *sfc = spi_controller_get_devdata(mem->spi->controller);
 	u32 len = op->data.nbytes;
 	int ret;
 
-	if (unlikely(mem->spi->max_speed_hz != sfc->frequency)) {
+	if (sfc->rv1103b) {
+		ret = rockchip_sfc_prepare_clock(sfc, mem);
+		if (ret)
+			return ret;
+	} else if (unlikely(mem->spi->max_speed_hz != sfc->frequency)) {
 		ret = clk_set_rate(sfc->clk, mem->spi->max_speed_hz);
 		if (ret)
 			return ret;
@@ -501,9 +683,12 @@ static int rockchip_sfc_exec_mem_op(struct spi_mem *mem, const struct spi_mem_op
 	}
 
 	rockchip_sfc_adjust_op_work((struct spi_mem_op *)op);
-	rockchip_sfc_xfer_setup(sfc, mem, op, len);
+	ret = rockchip_sfc_xfer_setup(sfc, mem, op, len);
+	if (ret)
+		return ret;
 	if (len) {
-		if (likely(sfc->use_dma) && len >= SFC_DMA_TRANS_THRETHOLD) {
+		if (likely(sfc->use_dma) && len >= SFC_DMA_TRANS_THRETHOLD &&
+		    (!sfc->rv1103b || IS_ALIGNED(len, 4))) {
 			init_completion(&sfc->cp);
 			rockchip_sfc_irq_unmask(sfc, SFC_IMR_DMA);
 			ret = rockchip_sfc_xfer_data_dma(sfc, op, len);
@@ -574,6 +759,16 @@ static int rockchip_sfc_probe(struct platform_device *pdev)
 
 	sfc = spi_controller_get_devdata(host);
 	sfc->dev = dev;
+	sfc->rv1103b = of_device_is_compatible(dev->of_node, "rockchip,rv1103b-fspi");
+	if (sfc->rv1103b) {
+		host->num_chipselect = RV1103B_SFC_NUM_CS;
+		sfc->grf = syscon_regmap_lookup_by_phandle(dev->of_node, "rockchip,grf");
+		if (IS_ERR(sfc->grf))
+			return dev_err_probe(dev, PTR_ERR(sfc->grf), "failed to get SFC grf\n");
+		sfc->sclk_x2_bypass = of_property_read_bool(dev->of_node,
+							 "rockchip,sclk-x2-bypass");
+		of_property_read_u32(dev->of_node, "rockchip,max-dll", &sfc->max_dll_cells);
+	}
 
 	sfc->regbase = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(sfc->regbase))
@@ -639,6 +834,13 @@ static int rockchip_sfc_probe(struct platform_device *pdev)
 
 	sfc->max_iosize = rockchip_sfc_get_max_iosize(sfc);
 	sfc->version = rockchip_sfc_get_version(sfc);
+	if (sfc->rv1103b) {
+		u32 limit = sfc->version >= SFC_VER_5 ?
+			SFC_DLL_CTRL0_DLL_MAX_VER5 : SFC_DLL_CTRL0_DLL_MAX_VER4;
+
+		sfc->max_dll_cells = sfc->max_dll_cells ?
+			min(sfc->max_dll_cells, limit) : limit;
+	}
 
 	ret = spi_register_controller(host);
 	if (ret)
@@ -666,6 +868,7 @@ static void rockchip_sfc_remove(struct platform_device *pdev)
 }
 
 static const struct of_device_id rockchip_sfc_dt_ids[] = {
+	{ .compatible = "rockchip,rv1103b-fspi" },
 	{ .compatible = "rockchip,sfc"},
 	{ /* sentinel */ }
 };
