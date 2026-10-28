@@ -415,6 +415,22 @@ static const struct pinctrl_ops rockchip_pctrl_ops = {
  * Hardware access
  */
 
+static struct rockchip_mux_recalced_data rv1103b_mux_recalced_data[] = {
+	{
+		.num = 1,
+		.pin = 6,
+		.reg = 0x10024,
+		.bit = 8,
+		.mask = 0xf
+	}, {
+		.num = 1,
+		.pin = 7,
+		.reg = 0x10024,
+		.bit = 12,
+		.mask = 0xf
+	},
+};
+
 static struct rockchip_mux_recalced_data rv1108_mux_recalced_data[] = {
 	{
 		.num = 1,
@@ -1425,6 +1441,214 @@ static int px30_calc_schmitt_reg_and_bit(struct rockchip_pin_bank *bank,
 
 	*reg += ((pin_num / pins_per_reg) * 4);
 	*bit = pin_num % pins_per_reg;
+
+	return 0;
+}
+
+#define RV1103B_DRV_BITS_PER_PIN		8
+#define RV1103B_DRV_PINS_PER_REG		2
+#define RV1103B_DRV_GPIO0_A_OFFSET		0x40100
+#define RV1103B_DRV_GPIO0_B_OFFSET		0x50110
+#define RV1103B_DRV_GPIO1_A01_OFFSET		0x140
+#define RV1103B_DRV_GPIO1_A67_OFFSET		0x1014C
+#define RV1103B_DRV_GPIO2_OFFSET		0x30180
+#define RV1103B_DRV_GPIO2_SARADC_OFFSET		0x3080C
+
+static int rv1103b_calc_drv_reg_and_bit(struct rockchip_pin_bank *bank,
+				       int pin_num, struct regmap **regmap,
+				       int *reg, u8 *bit)
+{
+	struct rockchip_pinctrl *info = bank->drvdata;
+	int ret = 0;
+
+	*regmap = info->regmap_base;
+	switch (bank->bank_num) {
+	case 0:
+		if (pin_num < 7)
+			*reg = RV1103B_DRV_GPIO0_A_OFFSET;
+		else if (pin_num > 7 && pin_num < 14)
+			*reg = RV1103B_DRV_GPIO0_B_OFFSET - 0x10;
+		else
+			ret = -EINVAL;
+		break;
+
+	case 1:
+		if (pin_num < 6)
+			*reg = RV1103B_DRV_GPIO1_A01_OFFSET;
+		else if (pin_num >= 6 && pin_num < 23)
+			*reg = RV1103B_DRV_GPIO1_A67_OFFSET - 0xc;
+		else if (pin_num >= 24 && pin_num < 30)
+			*reg = RV1103B_DRV_GPIO1_A67_OFFSET - 0xc;
+		else
+			ret = -EINVAL;
+		break;
+
+	case 2:
+		if (pin_num < 12) {
+			*reg = RV1103B_DRV_GPIO2_OFFSET;
+		} else if (pin_num >= 16) {
+			ret = -EINVAL;
+		} else {
+			*reg = RV1103B_DRV_GPIO2_SARADC_OFFSET;
+			*bit = 10;
+
+			return 0;
+		}
+		break;
+
+	default:
+		ret = -EINVAL;
+		break;
+	}
+
+	if (ret) {
+		dev_err(info->dev, "unsupported bank_num %d pin_num %d\n", bank->bank_num, pin_num);
+
+		return ret;
+	}
+
+	*reg += ((pin_num / RV1103B_DRV_PINS_PER_REG) * 4);
+	*bit = pin_num % RV1103B_DRV_PINS_PER_REG;
+	*bit *= RV1103B_DRV_BITS_PER_PIN;
+
+	return 0;
+}
+
+#define RV1103B_PULL_BITS_PER_PIN		2
+#define RV1103B_PULL_PINS_PER_REG		8
+#define RV1103B_PULL_GPIO0_A_OFFSET		0x40200
+#define RV1103B_PULL_GPIO0_B_OFFSET		0x50204
+#define RV1103B_PULL_GPIO1_A01_OFFSET		0x210
+#define RV1103B_PULL_GPIO1_A67_OFFSET		0x10210
+#define RV1103B_PULL_GPIO2_OFFSET		0x30220
+#define RV1103B_PULL_GPIO2_SARADC_OFFSET	0x3080C
+
+static int rv1103b_calc_pull_reg_and_bit(struct rockchip_pin_bank *bank,
+					int pin_num, struct regmap **regmap,
+					int *reg, u8 *bit)
+{
+	struct rockchip_pinctrl *info = bank->drvdata;
+	int ret = 0;
+
+	*regmap = info->regmap_base;
+	switch (bank->bank_num) {
+	case 0:
+		if (pin_num < 7)
+			*reg = RV1103B_PULL_GPIO0_A_OFFSET;
+		else if (pin_num > 7 && pin_num < 14)
+			*reg = RV1103B_PULL_GPIO0_B_OFFSET - 0x4;
+		else
+			ret = -EINVAL;
+		break;
+
+	case 1:
+		if (pin_num < 6)
+			*reg = RV1103B_PULL_GPIO1_A01_OFFSET;
+		else if (pin_num >= 6 && pin_num < 23)
+			*reg = RV1103B_PULL_GPIO1_A67_OFFSET;
+		else if (pin_num >= 24 && pin_num < 30)
+			*reg = RV1103B_PULL_GPIO1_A67_OFFSET;
+		else
+			ret = -EINVAL;
+		break;
+
+	case 2:
+		if (pin_num < 12) {
+			*reg = RV1103B_PULL_GPIO2_OFFSET;
+		} else if (pin_num >= 16) {
+			ret = -EINVAL;
+		} else {
+			*reg = RV1103B_PULL_GPIO2_SARADC_OFFSET;
+			*bit = 13;
+
+			return 0;
+		}
+		break;
+
+	default:
+		ret = -EINVAL;
+		break;
+	}
+
+	if (ret) {
+		dev_err(info->dev, "unsupported bank_num %d pin_num %d\n", bank->bank_num, pin_num);
+
+		return ret;
+	}
+
+	*reg += ((pin_num / RV1103B_PULL_PINS_PER_REG) * 4);
+	*bit = pin_num % RV1103B_PULL_PINS_PER_REG;
+	*bit *= RV1103B_PULL_BITS_PER_PIN;
+
+	return 0;
+}
+
+#define RV1103B_SMT_BITS_PER_PIN		1
+#define RV1103B_SMT_PINS_PER_REG		8
+#define RV1103B_SMT_GPIO0_A_OFFSET		0x40400
+#define RV1103B_SMT_GPIO0_B_OFFSET		0x50404
+#define RV1103B_SMT_GPIO1_A01_OFFSET		0x410
+#define RV1103B_SMT_GPIO1_A67_OFFSET		0x10410
+#define RV1103B_SMT_GPIO2_OFFSET		0x30420
+#define RV1103B_SMT_GPIO2_SARADC_OFFSET		0x3080C
+
+static int rv1103b_calc_schmitt_reg_and_bit(struct rockchip_pin_bank *bank,
+					   int pin_num,
+					   struct regmap **regmap,
+					   int *reg, u8 *bit)
+{
+	struct rockchip_pinctrl *info = bank->drvdata;
+	int ret = 0;
+
+	*regmap = info->regmap_base;
+	switch (bank->bank_num) {
+	case 0:
+		if (pin_num < 7)
+			*reg = RV1103B_SMT_GPIO0_A_OFFSET;
+		else if (pin_num > 7 && pin_num < 14)
+			*reg = RV1103B_SMT_GPIO0_B_OFFSET - 0x4;
+		else
+			ret = -EINVAL;
+		break;
+
+	case 1:
+		if (pin_num < 6)
+			*reg = RV1103B_SMT_GPIO1_A01_OFFSET;
+		else if (pin_num >= 6 && pin_num < 23)
+			*reg = RV1103B_SMT_GPIO1_A67_OFFSET;
+		else if (pin_num >= 24 && pin_num < 30)
+			*reg = RV1103B_SMT_GPIO1_A67_OFFSET;
+		else
+			ret = -EINVAL;
+		break;
+
+	case 2:
+		if (pin_num < 12) {
+			*reg = RV1103B_SMT_GPIO2_OFFSET;
+		} else if (pin_num >= 16) {
+			ret = -EINVAL;
+		} else {
+			*reg = RV1103B_SMT_GPIO2_SARADC_OFFSET;
+			*bit = 8;
+
+			return 0;
+		}
+		break;
+
+	default:
+		ret = -EINVAL;
+		break;
+	}
+
+	if (ret) {
+		dev_err(info->dev, "unsupported bank_num %d pin_num %d\n", bank->bank_num, pin_num);
+
+		return ret;
+	}
+
+	*reg += ((pin_num / RV1103B_SMT_PINS_PER_REG) * 4);
+	*bit = pin_num % RV1103B_SMT_PINS_PER_REG;
+	*bit *= RV1103B_SMT_BITS_PER_PIN;
 
 	return 0;
 }
@@ -2519,6 +2743,16 @@ static int rockchip_get_drive_perpin(struct rockchip_pin_bank *bank,
 	if (ret)
 		return ret;
 
+	if (ctrl->type == RV1103B) {
+		ret = regmap_read(regmap, reg, &data);
+		if (ret)
+			return ret;
+		data >>= bit;
+		if (bank->bank_num == 2 && pin_num >= 12)
+			return data & 0x3;
+		return fls(data & 0xff) - 1;
+	}
+
 	switch (drv_type) {
 	case DRV_TYPE_IO_1V8_3V0_AUTO:
 	case DRV_TYPE_IO_3V3_ONLY:
@@ -2600,6 +2834,20 @@ static int rockchip_set_drive_perpin(struct rockchip_pin_bank *bank,
 	ret = ctrl->drv_calc_reg(bank, pin_num, &regmap, &reg, &bit);
 	if (ret)
 		return ret;
+	if (ctrl->type == RV1103B) {
+		if (bank->bank_num == 2 && pin_num >= 12) {
+			if (strength < 0 || strength > 3)
+				return -EINVAL;
+			rmask_bits = 2;
+			ret = strength;
+		} else {
+			if (strength < 0 || strength > 7)
+				return -EINVAL;
+			rmask_bits = RV1103B_DRV_BITS_PER_PIN;
+			ret = GENMASK(strength, 0);
+		}
+		goto config;
+	}
 	if (ctrl->type == RK3588) {
 		rmask_bits = RK3588_DRV_BITS_PER_PIN;
 		ret = strength;
@@ -2742,6 +2990,7 @@ static int rockchip_get_pull(struct rockchip_pin_bank *bank, int pin_num)
 				? PIN_CONFIG_BIAS_PULL_PIN_DEFAULT
 				: PIN_CONFIG_BIAS_DISABLE;
 	case PX30:
+	case RV1103B:
 	case RV1108:
 	case RK3188:
 	case RK3288:
@@ -2754,6 +3003,8 @@ static int rockchip_get_pull(struct rockchip_pin_bank *bank, int pin_num)
 	case RK3576:
 	case RK3588:
 		pull_type = bank->pull_type[pin_num / 8];
+		if (ctrl->type == RV1103B && bank->bank_num == 2 && pin_num >= 12)
+			pull_type = PULL_TYPE_IO_1V8_ONLY;
 		data >>= bit;
 		data &= (1 << RK3188_PULL_BITS_PER_PIN) - 1;
 		/*
@@ -2802,6 +3053,7 @@ static int rockchip_set_pull(struct rockchip_pin_bank *bank,
 		ret = regmap_write(regmap, reg, data);
 		break;
 	case PX30:
+	case RV1103B:
 	case RV1108:
 	case RV1126:
 	case RK3188:
@@ -2815,6 +3067,8 @@ static int rockchip_set_pull(struct rockchip_pin_bank *bank,
 	case RK3576:
 	case RK3588:
 		pull_type = bank->pull_type[pin_num / 8];
+		if (ctrl->type == RV1103B && bank->bank_num == 2 && pin_num >= 12)
+			pull_type = PULL_TYPE_IO_1V8_ONLY;
 		ret = -EINVAL;
 		for (i = 0; i < ARRAY_SIZE(rockchip_pull_list[pull_type]);
 			i++) {
@@ -2920,6 +3174,9 @@ static int rockchip_get_schmitt(struct rockchip_pin_bank *bank, int pin_num)
 	if (ret)
 		return ret;
 
+	if (ctrl->type == RV1103B && bank->bank_num == 2 && pin_num >= 12)
+		return (data >> bit) & 0x3;
+
 	data >>= bit;
 	switch (ctrl->type) {
 	case RK3568:
@@ -2960,6 +3217,12 @@ static int rockchip_set_schmitt(struct rockchip_pin_bank *bank,
 		data = BIT(bit + 16) | (enable << bit);
 		rmask = BIT(bit + 16) | BIT(bit);
 		break;
+	}
+
+	if (ctrl->type == RV1103B && bank->bank_num == 2 && pin_num >= 12) {
+		data = 0x3 << (bit + 16);
+		rmask = data | (data >> 16);
+		data |= (enable ? 0x3 : 0) << bit;
 	}
 
 	return regmap_update_bits(regmap, reg, rmask, data);
@@ -3068,6 +3331,7 @@ static bool rockchip_pinconf_pull_valid(struct rockchip_pin_ctrl *ctrl,
 	case RK3066B:
 		return pull ? false : true;
 	case PX30:
+	case RV1103B:
 	case RV1108:
 	case RV1126:
 	case RK3188:
@@ -3817,6 +4081,39 @@ static struct rockchip_pin_ctrl px30_pin_ctrl = {
 		.schmitt_calc_reg	= px30_calc_schmitt_reg_and_bit,
 };
 
+static struct rockchip_pin_bank rv1103b_pin_banks[] = {
+	PIN_BANK_IOMUX_FLAGS_OFFSET(0, 32, "gpio0",
+				    IOMUX_WIDTH_4BIT,
+				    IOMUX_WIDTH_4BIT,
+				    IOMUX_WIDTH_4BIT,
+				    IOMUX_WIDTH_4BIT,
+				    0x40000, 0x50008, 0x50010, 0x50018),
+	PIN_BANK_IOMUX_FLAGS_OFFSET(1, 32, "gpio1",
+				    IOMUX_WIDTH_4BIT,
+				    IOMUX_WIDTH_4BIT,
+				    IOMUX_WIDTH_4BIT,
+				    IOMUX_WIDTH_4BIT,
+				    0x20, 0x10028, 0x10030, 0x10038),
+	PIN_BANK_IOMUX_FLAGS_OFFSET(2, 32, "gpio2",
+				    IOMUX_WIDTH_4BIT,
+				    IOMUX_WIDTH_4BIT,
+				    IOMUX_WIDTH_4BIT,
+				    IOMUX_WIDTH_4BIT,
+				    0x30040, 0x30048, 0x30050, 0x30058),
+};
+
+static struct rockchip_pin_ctrl rv1103b_pin_ctrl __maybe_unused = {
+	.pin_banks		= rv1103b_pin_banks,
+	.nr_banks		= ARRAY_SIZE(rv1103b_pin_banks),
+	.label			= "RV1103B-GPIO",
+	.type			= RV1103B,
+	.iomux_recalced		= rv1103b_mux_recalced_data,
+	.niomux_recalced	= ARRAY_SIZE(rv1103b_mux_recalced_data),
+	.pull_calc_reg		= rv1103b_calc_pull_reg_and_bit,
+	.drv_calc_reg		= rv1103b_calc_drv_reg_and_bit,
+	.schmitt_calc_reg	= rv1103b_calc_schmitt_reg_and_bit,
+};
+
 static struct rockchip_pin_bank rv1108_pin_banks[] = {
 	PIN_BANK_IOMUX_FLAGS(0, 32, "gpio0", IOMUX_SOURCE_PMU,
 					     IOMUX_SOURCE_PMU,
@@ -4345,6 +4642,8 @@ static struct rockchip_pin_ctrl rk3588_pin_ctrl = {
 static const struct of_device_id rockchip_pinctrl_dt_match[] = {
 	{ .compatible = "rockchip,px30-pinctrl",
 		.data = &px30_pin_ctrl },
+	{ .compatible = "rockchip,rv1103b-pinctrl",
+		.data = &rv1103b_pin_ctrl },
 	{ .compatible = "rockchip,rv1108-pinctrl",
 		.data = &rv1108_pin_ctrl },
 	{ .compatible = "rockchip,rv1126-pinctrl",
