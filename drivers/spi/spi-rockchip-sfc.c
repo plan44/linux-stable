@@ -657,7 +657,7 @@ err_hclk:
 static void rockchip_sfc_remove(struct platform_device *pdev)
 {
 	struct spi_controller *host = platform_get_drvdata(pdev);
-	struct rockchip_sfc *sfc = platform_get_drvdata(pdev);
+	struct rockchip_sfc *sfc = spi_controller_get_devdata(host);
 
 	spi_unregister_controller(host);
 
