@@ -55,6 +55,11 @@
 
 #define OTPC_TIMEOUT			10000
 
+/* RV1103B ECC-read lock control */
+#define OTPC_LOCK_CTRL			0x0050
+#define OTPC_LOCK			BIT(0)
+#define OTPC_LOCK_MASK			BIT(16)
+
 /* RK3588 Register */
 #define RK3588_OTPC_AUTO_CTRL		0x04
 #define RK3588_OTPC_AUTO_EN		0x08
@@ -237,6 +242,61 @@ read_end:
 	return ret;
 }
 
+/*
+ * RV1103B shares the RK3568 ECC read engine, but requires locking each
+ * transfer. Match the working vendor sequence without resetting the
+ * controller on each read; the outer read callback manages its clocks
+ * and converts byte requests to aligned 16-bit words.
+ */
+static int rv1103b_otp_read(void *context, unsigned int offset, void *val,
+			    size_t count)
+{
+	struct rockchip_otp *otp = context;
+	u16 *buf = val;
+	u32 otp_qp;
+	int ret;
+
+	ret = rockchip_otp_ecc_enable(otp, true);
+	if (ret) {
+		dev_err(otp->dev, "failed to enable otp ECC\n");
+		return ret;
+	}
+
+	writel(OTPC_USE_USER | OTPC_USE_USER_MASK, otp->base + OTPC_USER_CTRL);
+	udelay(5);
+
+	while (count--) {
+		writel(OTPC_LOCK | OTPC_LOCK_MASK, otp->base + OTPC_LOCK_CTRL);
+		writel(offset++ | OTPC_USER_ADDR_MASK,
+		       otp->base + OTPC_USER_ADDR);
+		writel(OTPC_USER_FSM_ENABLE | OTPC_USER_FSM_ENABLE_MASK,
+		       otp->base + OTPC_USER_ENABLE);
+
+		ret = rockchip_otp_wait_status(otp, OTPC_INT_STATUS, OTPC_USER_DONE);
+		if (ret) {
+			dev_err(otp->dev, "timeout during otp read\n");
+			goto read_end;
+		}
+
+		otp_qp = readl(otp->base + OTPC_USER_QP);
+		if (((otp_qp & 0xc0) == 0xc0) || (otp_qp & 0x20)) {
+			ret = -EIO;
+			dev_err(otp->dev, "otp ECC check failed\n");
+			goto read_end;
+		}
+
+		*buf++ = readl(otp->base + OTPC_USER_Q);
+		writel(OTPC_LOCK_MASK, otp->base + OTPC_LOCK_CTRL);
+	}
+
+read_end:
+	if (ret)
+		writel(OTPC_LOCK_MASK, otp->base + OTPC_LOCK_CTRL);
+	writel(OTPC_USE_USER_MASK, otp->base + OTPC_USER_CTRL);
+
+	return ret;
+}
+
 static int rk3588_otp_read(void *context, unsigned int offset,
 			   void *val, size_t count)
 {
@@ -333,6 +393,18 @@ static const struct rockchip_data px30_data = {
 	.reg_read = px30_otp_read,
 };
 
+static const char * const rv1103b_otp_clocks[] = {
+	"usr", "sbpi", "apb", "phy",
+};
+
+static const struct rockchip_data rv1103b_data = {
+	.size = 0x80,
+	.word_size = sizeof(u16),
+	.clks = rv1103b_otp_clocks,
+	.num_clks = ARRAY_SIZE(rv1103b_otp_clocks),
+	.reg_read = rv1103b_otp_read,
+};
+
 static const char * const rk3528_otp_clocks[] = {
 	"otp", "apb_pclk", "sbpi",
 };
@@ -380,6 +452,10 @@ static const struct rockchip_data rk3588_data = {
 };
 
 static const struct of_device_id rockchip_otp_match[] = {
+	{
+		.compatible = "rockchip,rv1103b-otp",
+		.data = &rv1103b_data,
+	},
 	{
 		.compatible = "rockchip,px30-otp",
 		.data = &px30_data,
