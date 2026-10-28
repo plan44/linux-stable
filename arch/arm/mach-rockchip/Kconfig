@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-only
 config ARCH_ROCKCHIP
-	bool "Rockchip RK2928 and RK3xxx SOCs"
+	bool "Rockchip RK2928, RK3xxx and RV1103B SoCs"
 	depends on ARCH_MULTI_V7
 	select PINCTRL
 	select PINCTRL_ROCKCHIP
@@ -20,5 +20,5 @@ config ARCH_ROCKCHIP
 	select ZONE_DMA if ARM_LPAE
 	select PM
 	help
-	  Support for Rockchip's Cortex-A9 Single-to-Quad-Core-SoCs
-	  containing the RK2928, RK30xx and RK31xx series.
+	  Support for Rockchip ARMv7 SoCs, including the Cortex-A9
+	  RK2928/RK3xxx family and the Cortex-A7 RV1103B.
