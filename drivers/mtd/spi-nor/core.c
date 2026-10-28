@@ -3237,8 +3237,9 @@ int spi_nor_set_4byte_addr_mode(struct spi_nor *nor, bool enable)
 		 * reboots (e.g., crashes). Warn the user (or hopefully, system
 		 * designer) that this is bad.
 		 */
-		WARN_ONCE(nor->flags & SNOR_F_BROKEN_RESET,
-			  "enabling reset hack; may not recover from unexpected reboots\n");
+		if (nor->flags & SNOR_F_BROKEN_RESET)
+			dev_warn_once(nor->dev,
+				      "enabling reset hack; may not recover from unexpected reboots\n");
 	}
 
 	ret = params->set_4byte_addr_mode(nor, enable);
