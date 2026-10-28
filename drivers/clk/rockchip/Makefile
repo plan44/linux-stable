@@ -8,6 +8,7 @@ obj-$(CONFIG_COMMON_CLK_ROCKCHIP) += clk-rockchip.o
 clk-rockchip-y += clk.o
 clk-rockchip-y += clk-pll.o
 clk-rockchip-y += clk-cpu.o
+clk-rockchip-y += clk-fractional-divider-v2.o
 clk-rockchip-y += clk-half-divider.o
 clk-rockchip-y += clk-inverter.o
 clk-rockchip-y += clk-mmc-phase.o
@@ -18,6 +19,8 @@ clk-rockchip-y += gate-grf.o
 clk-rockchip-$(CONFIG_RESET_CONTROLLER) += softrst.o
 
 obj-$(CONFIG_CLK_PX30)          += clk-px30.o
+obj-$(CONFIG_CLK_RV1103B)       += clk-rv1103b.o
+obj-$(CONFIG_ROCKCHIP_CLK_PVTPLL) += clk-pvtpll.o
 obj-$(CONFIG_CLK_RV110X)        += clk-rv1108.o
 obj-$(CONFIG_CLK_RV1126)        += clk-rv1126.o
 obj-$(CONFIG_CLK_RK3036)        += clk-rk3036.o

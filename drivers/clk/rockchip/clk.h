@@ -66,6 +66,55 @@ struct clk;
 #define PX30_PMU_CLKGATE_CON(x)		((x) * 0x4 + 0x80)
 #define PX30_PMU_MODE			0x0020
 
+#define RV1103B_TOPCRU_BASE		0x60000
+#define RV1103B_PERICRU_BASE		0x0
+#define RV1103B_VICRU_BASE		0x30000
+#define RV1103B_NPUCRU_BASE		0x20000
+#define RV1103B_CORECRU_BASE		0x40000
+#define RV1103B_VEPUCRU_BASE		0x10000
+#define RV1103B_DDRCRU_BASE		0x50000
+#define RV1103B_SUBDDRCRU_BASE		0x58000
+#define RV1103B_PMUCRU_BASE		0x70000
+#define RV1103B_PMU1CRU_BASE		0x80000
+
+#define RV1103B_PMUCLKSEL_CON(x)	((x) * 0x4 + 0x300 + RV1103B_PMUCRU_BASE)
+#define RV1103B_PMUCLKGATE_CON(x)	((x) * 0x4 + 0x800 + RV1103B_PMUCRU_BASE)
+#define RV1103B_PMUSOFTRST_CON(x)	((x) * 0x4 + 0xa00 + RV1103B_PMUCRU_BASE)
+#define RV1103B_PMU1CLKSEL_CON(x)	((x) * 0x4 + 0x300 + RV1103B_PMU1CRU_BASE)
+#define RV1103B_PMU1CLKGATE_CON(x)	((x) * 0x4 + 0x800 + RV1103B_PMU1CRU_BASE)
+#define RV1103B_PMU1SOFTRST_CON(x)	((x) * 0x4 + 0xa00 + RV1103B_PMU1CRU_BASE)
+#define RV1103B_PLL_CON(x)		((x) * 0x4 + RV1103B_TOPCRU_BASE)
+#define RV1103B_MODE_CON		(0x280 + RV1103B_TOPCRU_BASE)
+#define RV1103B_CLKSEL_CON(x)		((x) * 0x4 + 0x300 + RV1103B_TOPCRU_BASE)
+#define RV1103B_CLKGATE_CON(x)		((x) * 0x4 + 0x800 + RV1103B_TOPCRU_BASE)
+#define RV1103B_SOFTRST_CON(x)		((x) * 0x4 + 0xa00 + RV1103B_TOPCRU_BASE)
+#define RV1103B_GLB_SRST_FST		(0xc08 + RV1103B_TOPCRU_BASE)
+#define RV1103B_GLB_SRST_SND		(0xc0c + RV1103B_TOPCRU_BASE)
+#define RV1103B_CLK_SAI_FRAC_DIV_HIGH	(0xcc0 + RV1103B_TOPCRU_BASE)
+#define RV1103B_PERICLKSEL_CON(x)	((x) * 0x4 + 0x300 + RV1103B_PERICRU_BASE)
+#define RV1103B_PERICLKGATE_CON(x)	((x) * 0x4 + 0x800 + RV1103B_PERICRU_BASE)
+#define RV1103B_PERISOFTRST_CON(x)	((x) * 0x4 + 0xa00 + RV1103B_PERICRU_BASE)
+#define RV1103B_PERICRU_IP_CON		(0xc08 + RV1103B_PERICRU_BASE)
+#define RV1103B_VICLKSEL_CON(x)		((x) * 0x4 + 0x300 + RV1103B_VICRU_BASE)
+#define RV1103B_VICLKGATE_CON(x)	((x) * 0x4 + 0x800 + RV1103B_VICRU_BASE)
+#define RV1103B_VISOFTRST_CON(x)	((x) * 0x4 + 0xa00 + RV1103B_VICRU_BASE)
+#define RV1103B_NPUCLKSEL_CON(x)	((x) * 0x4 + 0x300 + RV1103B_NPUCRU_BASE)
+#define RV1103B_NPUCLKGATE_CON(x)	((x) * 0x4 + 0x800 + RV1103B_NPUCRU_BASE)
+#define RV1103B_NPUSOFTRST_CON(x)	((x) * 0x4 + 0xa00 + RV1103B_NPUCRU_BASE)
+#define RV1103B_CORECLKSEL_CON(x)	((x) * 0x4 + 0x300 + RV1103B_CORECRU_BASE)
+#define RV1103B_CORECLKGATE_CON(x)	((x) * 0x4 + 0x800 + RV1103B_CORECRU_BASE)
+#define RV1103B_CORESOFTRST_CON(x)	((x) * 0x4 + 0xa00 + RV1103B_CORECRU_BASE)
+#define RV1103B_VEPUCLKSEL_CON(x)	((x) * 0x4 + 0x300 + RV1103B_VEPUCRU_BASE)
+#define RV1103B_VEPUCLKGATE_CON(x)	((x) * 0x4 + 0x800 + RV1103B_VEPUCRU_BASE)
+#define RV1103B_VEPUSOFTRST_CON(x)	((x) * 0x4 + 0xa00 + RV1103B_VEPUCRU_BASE)
+#define RV1103B_DDRCLKSEL_CON(x)	((x) * 0x4 + 0x300 + RV1103B_DDRCRU_BASE)
+#define RV1103B_DDRCLKGATE_CON(x)	((x) * 0x4 + 0x800 + RV1103B_DDRCRU_BASE)
+#define RV1103B_DDRSOFTRST_CON(x)	((x) * 0x4 + 0xa00 + RV1103B_DDRCRU_BASE)
+#define RV1103B_SUBDDRCLKSEL_CON(x)	((x) * 0x4 + 0x300 + RV1103B_SUBDDRCRU_BASE)
+#define RV1103B_SUBDDRCLKGATE_CON(x)	((x) * 0x4 + 0x800 + RV1103B_SUBDDRCRU_BASE)
+#define RV1103B_SUBDDRSOFTRST_CON(x)	((x) * 0x4 + 0xa00 + RV1103B_SUBDDRCRU_BASE)
+#define RV1103B_SUBDDRMODE_CON		(0x280 + RV1103B_SUBDDRCRU_BASE)
+
 #define RV1108_PLL_CON(x)		((x) * 0x4)
 #define RV1108_CLKSEL_CON(x)		((x) * 0x4 + 0x60)
 #define RV1108_CLKGATE_CON(x)		((x) * 0x4 + 0x120)
@@ -628,6 +677,7 @@ enum rockchip_clk_branch_type {
 	branch_muxgrf,
 	branch_divider,
 	branch_fraction_divider,
+	branch_fraction_divider_v2,
 	branch_gate,
 	branch_grf_gate,
 	branch_linked_gate,
@@ -850,6 +900,23 @@ struct rockchip_clk_branch {
 		.div_flags	= df,				\
 		.gate_offset	= -1,				\
 		.child		= ch,				\
+	}
+
+#define COMPOSITE_FRAC_V2(_id, cname, pname, f, mo, ms, mw, do, ds, dw, df)\
+	{							\
+		.id		= _id,				\
+		.branch_type	= branch_fraction_divider_v2,	\
+		.name		= cname,			\
+		.parent_names	= (const char *[]){ pname },	\
+		.num_parents	= 1,				\
+		.flags		= f,				\
+		.muxdiv_offset	= mo,				\
+		.mux_shift	= ms,				\
+		.mux_width	= mw,				\
+		.div_offset	= do,				\
+		.div_shift	= ds,				\
+		.div_width	= dw,				\
+		.div_flags	= df,				\
 	}
 
 #define COMPOSITE_DDRCLK(_id, cname, pnames, f, mo, ms, mw,	\
@@ -1172,6 +1239,48 @@ void rockchip_clk_register_armclk(struct rockchip_clk_provider *ctx,
 void rockchip_clk_protect_critical(const char *const clocks[], int nclocks);
 void rockchip_register_restart_notifier(struct rockchip_clk_provider *ctx,
 					unsigned int reg, void (*cb)(void));
+
+struct clk *rockchip_clk_register_cpuclk_v2(const char *name,
+					    const char *const *parent_names,
+					    u8 num_parents, void __iomem *base,
+					    int muxdiv_offset, u8 mux_shift,
+					    u8 mux_width, u8 mux_flags,
+					    int div_offset, u8 div_shift,
+					    u8 div_width, u8 div_flags,
+					    unsigned long flags, spinlock_t *lock,
+					    const struct rockchip_cpuclk_rate_table *rates,
+					    int nrates);
+
+void rockchip_clk_register_armclk_v2(struct rockchip_clk_provider *ctx,
+				     struct rockchip_clk_branch *list,
+				     const struct rockchip_cpuclk_rate_table *rates,
+				     int nrates);
+
+struct clk_hw *clk_hw_register_fractional_divider_v2(struct device *dev,
+						     const char *name,
+						     const char *parent_name,
+						     unsigned long flags,
+						     void __iomem *reg,
+						     u8 mshift, u8 mwidth,
+						     u8 nshift, u8 nwidth,
+						     void __iomem *high_reg,
+						     u8 high_mshift, u8 high_mwidth,
+						     u8 high_nshift, u8 high_nwidth,
+						     u8 clk_divider_flags,
+						     spinlock_t *lock);
+struct clk *clk_register_fractional_divider_v2(struct device *dev,
+					       const char *name,
+					       const char *parent_name,
+					       unsigned long flags,
+					       void __iomem *reg,
+					       u8 mshift, u8 width,
+					       void __iomem *high_reg,
+					       u8 high_mshift, u8 high_width,
+					       u8 clk_divider_flags,
+					       spinlock_t *lock);
+void clk_hw_unregister_fractional_divider_v2(struct clk_hw *hw);
+
+int rockchip_pvtpll_volt_sel_adjust(u32 clock_id, u32 volt_sel);
 
 #define ROCKCHIP_SOFTRST_HIWORD_MASK	BIT(0)
 

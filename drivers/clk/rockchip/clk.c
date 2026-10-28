@@ -572,6 +572,16 @@ void rockchip_clk_register_branches(struct rockchip_clk_provider *ctx,
 				list->gate_flags, flags, list->child,
 				&ctx->lock);
 			break;
+		case branch_fraction_divider_v2:
+			clk = clk_register_fractional_divider_v2(NULL, list->name,
+				list->parent_names[0], flags,
+				ctx->reg_base + list->muxdiv_offset,
+				list->mux_shift, list->mux_width,
+				ctx->reg_base + list->div_offset,
+				list->div_shift, list->div_width,
+				list->div_flags,
+				&ctx->lock);
+			break;
 		case branch_half_divider:
 			clk = rockchip_clk_register_halfdiv(list->name,
 				list->parent_names, list->num_parents,
@@ -770,3 +780,27 @@ rockchip_register_restart_notifier(struct rockchip_clk_provider *ctx,
 		       __func__, ret);
 }
 EXPORT_SYMBOL_GPL(rockchip_register_restart_notifier);
+
+void rockchip_clk_register_armclk_v2(struct rockchip_clk_provider *ctx,
+				     struct rockchip_clk_branch *list,
+				     const struct rockchip_cpuclk_rate_table *rates,
+				     int nrates)
+{
+	struct clk *clk;
+
+	clk = rockchip_clk_register_cpuclk_v2(list->name, list->parent_names,
+					      list->num_parents, ctx->reg_base,
+					      list->muxdiv_offset, list->mux_shift,
+					      list->mux_width, list->mux_flags,
+					      list->div_offset, list->div_shift,
+					      list->div_width, list->div_flags,
+					      list->flags, &ctx->lock, rates, nrates);
+	if (IS_ERR(clk)) {
+		pr_err("%s: failed to register clock %s: %ld\n",
+		       __func__, list->name, PTR_ERR(clk));
+		return;
+	}
+
+	rockchip_clk_set_lookup(ctx, clk, list->id);
+}
+EXPORT_SYMBOL_GPL(rockchip_clk_register_armclk_v2);
