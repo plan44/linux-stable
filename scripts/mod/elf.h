@@ -2321,6 +2321,14 @@ typedef Elf32_Addr Elf32_Conflict;
 #define R_ARM_GOTPC		25	/* 32 bit PC relative offset to GOT */
 #define R_ARM_GOT32		26	/* 32 bit GOT entry */
 #define R_ARM_PLT32		27	/* 32 bit PLT address */
+#define R_ARM_CALL		28	/* ARM BL/BLX */
+#define R_ARM_JUMP24		29	/* ARM B/BL */
+#define R_ARM_THM_JUMP24	30	/* Thumb32 B.W */
+#define R_ARM_MOVW_ABS_NC	43	/* ARM MOVW */
+#define R_ARM_MOVT_ABS		44	/* ARM MOVT */
+#define R_ARM_THM_MOVW_ABS_NC	47	/* Thumb32 MOVW */
+#define R_ARM_THM_MOVT_ABS	48	/* Thumb32 MOVT */
+#define R_ARM_THM_JUMP19	51	/* Thumb32 conditional branch */
 #define R_ARM_ALU_PCREL_7_0	32
 #define R_ARM_ALU_PCREL_15_8	33
 #define R_ARM_ALU_PCREL_23_15	34
