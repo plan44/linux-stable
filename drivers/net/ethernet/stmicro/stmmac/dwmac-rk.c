@@ -14,6 +14,7 @@
 #include <linux/of_net.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/nvmem-consumer.h>
 #include <linux/platform_device.h>
 #include <linux/regulator/consumer.h>
 #include <linux/delay.h>
@@ -34,6 +35,7 @@ struct rk_gmac_ops {
 				    bool enable);
 	void (*integrated_phy_powerup)(struct rk_priv_data *bsp_priv);
 	void (*integrated_phy_powerdown)(struct rk_priv_data *bsp_priv);
+	int (*integrated_fephy_power)(struct rk_priv_data *bsp_priv, bool up);
 	bool php_grf_required;
 	bool regs_valid;
 	u32 regs[];
@@ -81,6 +83,8 @@ struct rk_priv_data {
 
 	struct regmap *grf;
 	struct regmap *php_grf;
+	u8 otp_data;
+	u32 bgs_increment;
 };
 
 #define HIWORD_UPDATE(val, mask, shift) \
@@ -1418,6 +1422,160 @@ static const struct rk_gmac_ops rk3588_ops = {
 	},
 };
 
+#define RV1103B_SYSGRF_GMAC_CLK_CON		0x500A4
+
+#define RV1103B_SYSGRF_GMAC_RMII_NOGATE		GRF_CLR_BIT(1)
+#define RV1103B_SYSGRF_GMAC_RMII_GATE		GRF_BIT(1)
+
+#define RV1103B_SYSGRF_GMAC_CLK_RMII_50M	GRF_BIT(2)
+#define RV1103B_SYSGRF_GMAC_CLK_RMII_2_5M	GRF_CLR_BIT(2)
+
+#define RV1103B_SYSGRF_MACPHY_CON0		0x500B0
+#define RV1103B_SYSGRF_MACPHY_CON1		0x500B4
+
+static void rv1103b_set_to_rmii(struct rk_priv_data *bsp_priv)
+{
+	struct device *dev = &bsp_priv->pdev->dev;
+
+	if (IS_ERR(bsp_priv->grf)) {
+		dev_err(dev, "%s: Missing rockchip,grf property\n", __func__);
+		return;
+	}
+
+	regmap_write(bsp_priv->grf, RV1103B_SYSGRF_GMAC_CLK_CON,
+		     RV1103B_SYSGRF_GMAC_CLK_RMII_50M);
+}
+
+static void rv1103b_set_rmii_speed(struct rk_priv_data *bsp_priv, int speed)
+{
+	struct device *dev = &bsp_priv->pdev->dev;
+	unsigned int val = 0;
+
+	if (IS_ERR(bsp_priv->grf)) {
+		dev_err(dev, "%s: Missing rockchip,grf property\n", __func__);
+		return;
+	}
+
+	if (speed == 10) {
+		val = RV1103B_SYSGRF_GMAC_CLK_RMII_2_5M;
+	} else if (speed == 100) {
+		val = RV1103B_SYSGRF_GMAC_CLK_RMII_50M;
+	} else {
+		dev_err(dev, "unknown speed value for RMII! speed=%d", speed);
+		return;
+	}
+
+	regmap_write(bsp_priv->grf, RV1103B_SYSGRF_GMAC_CLK_CON, val);
+}
+
+static int rv1103b_integrated_phy_power(struct rk_priv_data *priv, bool up)
+{
+	u32 bgs = priv->otp_data;
+	int ret;
+
+	if (!up)
+		return regmap_write(priv->grf, RV1103B_SYSGRF_MACPHY_CON0, GRF_BIT(1));
+
+	ret = reset_control_assert(priv->phy_reset);
+	if (ret)
+		return ret;
+	udelay(20);
+	ret = regmap_write(priv->grf, RV1103B_SYSGRF_MACPHY_CON0,
+			   GRF_CLR_BIT(1) | GRF_BIT(6) | GRF_BIT(8) |
+			   GRF_BIT(9) | GRF_BIT(11));
+	if (ret)
+		goto shutdown;
+
+	/* Values above seven encode the other half of the trim range. */
+	if (bgs <= 7)
+		bgs = min(bgs + priv->bgs_increment, 7U);
+	else
+		bgs = (bgs + priv->bgs_increment) & 0xf;
+	ret = regmap_write(priv->grf, RV1103B_SYSGRF_MACPHY_CON1,
+			   HIWORD_UPDATE(bgs, 0xf, 0));
+	if (ret)
+		goto shutdown;
+	usleep_range(10000, 12000);
+	ret = reset_control_deassert(priv->phy_reset);
+	if (ret)
+		goto shutdown;
+	usleep_range(50000, 60000);
+	return 0;
+
+shutdown:
+	regmap_write(priv->grf, RV1103B_SYSGRF_MACPHY_CON0, GRF_BIT(1));
+	reset_control_assert(priv->phy_reset);
+	return ret;
+}
+
+static void rv1103b_set_clock_selection(struct rk_priv_data *bsp_priv, bool input,
+					bool enable)
+{
+	/* only input mode */
+	unsigned int val = enable ? RV1103B_SYSGRF_GMAC_RMII_NOGATE :
+			   RV1103B_SYSGRF_GMAC_RMII_GATE;
+
+	regmap_write(bsp_priv->grf, RV1103B_SYSGRF_GMAC_CLK_CON, val);
+}
+
+static const struct rk_gmac_ops rv1103b_ops = {
+	.set_to_rmii = rv1103b_set_to_rmii,
+	.set_rmii_speed = rv1103b_set_rmii_speed,
+	.integrated_fephy_power = rv1103b_integrated_phy_power,
+	.set_clock_selection = rv1103b_set_clock_selection,
+};
+
+static void rv1103b_put_phy_reset(void *data)
+{
+	reset_control_put(data);
+}
+
+static void rv1103b_put_phy_clock(void *data)
+{
+	clk_put(data);
+}
+
+static int rv1103b_phy_setup(struct rk_priv_data *priv, struct device *dev,
+			   struct device_node *phy_node)
+{
+	struct nvmem_cell *cell;
+	u8 *data;
+	size_t len;
+	int ret;
+
+	if (!priv->clock_input || !priv->integrated_phy ||
+	    priv->phy_iface != PHY_INTERFACE_MODE_RMII)
+		return dev_err_probe(dev, -EINVAL,
+				     "RV1103B requires integrated RMII PHY input clock\n");
+	priv->phy_reset = of_reset_control_get_exclusive(phy_node, NULL);
+	if (IS_ERR(priv->phy_reset))
+		return dev_err_probe(dev, PTR_ERR(priv->phy_reset), "Cannot get FEPHY reset\n");
+	ret = devm_add_action_or_reset(dev, rv1103b_put_phy_reset, priv->phy_reset);
+	if (ret)
+		return ret;
+
+	of_property_read_u32(phy_node, "bgs,increment", &priv->bgs_increment);
+	priv->bgs_increment = min(priv->bgs_increment, 7U);
+	cell = nvmem_cell_get(dev, "bgs");
+	if (IS_ERR(cell)) {
+		ret = PTR_ERR(cell);
+		if (ret == -ENOENT || ret == -ENODEV) {
+			dev_warn(dev, "No FEPHY BGS cell, using default trim\n");
+			return 0;
+		}
+		return dev_err_probe(dev, ret, "Cannot get FEPHY BGS cell\n");
+	}
+	data = nvmem_cell_read(cell, &len);
+	nvmem_cell_put(cell);
+	if (IS_ERR(data))
+		return dev_err_probe(dev, PTR_ERR(data), "Cannot read FEPHY BGS trim\n");
+	ret = len == 1 ? 0 : -EINVAL;
+	if (!ret)
+		priv->otp_data = data[0];
+	kfree(data);
+	return ret ? dev_err_probe(dev, ret, "Invalid FEPHY BGS cell size\n") : 0;
+}
+
 #define RV1108_GRF_GMAC_CON0		0X0900
 
 /* RV1108_GRF_GMAC_CON0 */
@@ -1602,7 +1760,10 @@ static int rk_gmac_clk_init(struct plat_stmmacenet_data *plat)
 		return dev_err_probe(dev, ret, "Failed to get clocks\n");
 
 	/* "stmmaceth" will be enabled by the core */
-	bsp_priv->clk_mac = devm_clk_get(dev, "stmmaceth");
+	if (bsp_priv->ops == &rv1103b_ops && bsp_priv->clock_input)
+		bsp_priv->clk_mac = devm_clk_get_optional(dev, "stmmaceth");
+	else
+		bsp_priv->clk_mac = devm_clk_get(dev, "stmmaceth");
 	ret = PTR_ERR_OR_ZERO(bsp_priv->clk_mac);
 	if (ret)
 		return dev_err_probe(dev, ret, "Cannot get stmmaceth clock\n");
@@ -1618,7 +1779,14 @@ static int rk_gmac_clk_init(struct plat_stmmacenet_data *plat)
 		ret = PTR_ERR_OR_ZERO(bsp_priv->clk_phy);
 		if (ret)
 			return dev_err_probe(dev, ret, "Cannot get PHY clock\n");
-		clk_set_rate(bsp_priv->clk_phy, 50000000);
+		if (bsp_priv->ops == &rv1103b_ops) {
+			ret = devm_add_action_or_reset(dev, rv1103b_put_phy_clock,
+						       bsp_priv->clk_phy);
+			if (ret)
+				return ret;
+		} else {
+			clk_set_rate(bsp_priv->clk_phy, 50000000);
+		}
 	}
 
 	return 0;
@@ -1781,15 +1949,18 @@ static struct rk_priv_data *rk_gmac_setup(struct platform_device *pdev,
 		}
 	}
 
-	if (plat->phy_node) {
+	if (plat->phy_node)
 		bsp_priv->integrated_phy = of_property_read_bool(plat->phy_node,
-								 "phy-is-integrated");
-		if (bsp_priv->integrated_phy) {
-			bsp_priv->phy_reset = of_reset_control_get(plat->phy_node, NULL);
-			if (IS_ERR(bsp_priv->phy_reset)) {
-				dev_err(&pdev->dev, "No PHY reset control found.\n");
-				bsp_priv->phy_reset = NULL;
-			}
+							 "phy-is-integrated");
+	if (ops == &rv1103b_ops) {
+		ret = rv1103b_phy_setup(bsp_priv, dev, plat->phy_node);
+		if (ret)
+			return ERR_PTR(ret);
+	} else if (bsp_priv->integrated_phy) {
+		bsp_priv->phy_reset = of_reset_control_get(plat->phy_node, NULL);
+		if (IS_ERR(bsp_priv->phy_reset)) {
+			dev_err(dev, "No PHY reset control found.\n");
+			bsp_priv->phy_reset = NULL;
 		}
 	}
 	dev_info(dev, "integrated PHY? (%s).\n",
@@ -1869,6 +2040,15 @@ static int rk_gmac_powerup(struct rk_priv_data *bsp_priv)
 
 	pm_runtime_get_sync(dev);
 
+	if (bsp_priv->integrated_phy && bsp_priv->ops->integrated_fephy_power) {
+		ret = bsp_priv->ops->integrated_fephy_power(bsp_priv, true);
+		if (ret) {
+			pm_runtime_put_sync(dev);
+			phy_power_on(bsp_priv, false);
+			gmac_clk_enable(bsp_priv, false);
+			return ret;
+		}
+	}
 	if (bsp_priv->integrated_phy && bsp_priv->ops->integrated_phy_powerup)
 		bsp_priv->ops->integrated_phy_powerup(bsp_priv);
 
@@ -1877,6 +2057,12 @@ static int rk_gmac_powerup(struct rk_priv_data *bsp_priv)
 
 static void rk_gmac_powerdown(struct rk_priv_data *gmac)
 {
+	if (gmac->integrated_phy && gmac->ops->integrated_fephy_power) {
+		int ret = gmac->ops->integrated_fephy_power(gmac, false);
+
+		if (ret)
+			dev_err(&gmac->pdev->dev, "Cannot shut down FEPHY: %d\n", ret);
+	}
 	if (gmac->integrated_phy && gmac->ops->integrated_phy_powerdown)
 		gmac->ops->integrated_phy_powerdown(gmac);
 
@@ -2015,6 +2201,7 @@ static const struct of_device_id rk_gmac_dwmac_match[] = {
 	{ .compatible = "rockchip,rk3576-gmac", .data = &rk3576_ops },
 	{ .compatible = "rockchip,rk3588-gmac", .data = &rk3588_ops },
 	{ .compatible = "rockchip,rv1108-gmac", .data = &rv1108_ops },
+	{ .compatible = "rockchip,rv1103b-gmac", .data = &rv1103b_ops },
 	{ .compatible = "rockchip,rv1126-gmac", .data = &rv1126_ops },
 	{ }
 };
