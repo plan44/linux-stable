@@ -15,6 +15,7 @@
 #include "dw_mmc.h"
 #include "dw_mmc-pltfm.h"
 
+#define RV1103B_USRID_INTER_PHASE	0x20230001
 #define RK3288_CLKGEN_DIV		2
 #define SDMMC_TIMING_CON0		0x130
 #define SDMMC_TIMING_CON1		0x134
@@ -108,11 +109,14 @@ static int rockchip_mmc_set_internal_phase(struct dw_mci *host, bool sample, int
 	 * most likely problem we often face and which makes it difficult
 	 * for people to debug unstable mmc tuning results.
 	 */
-	if (!rate) {
+	if (rate < 1000) {
 		dev_err(host->dev, "%s: invalid clk rate\n", __func__);
 		return -EINVAL;
 	}
 
+	degrees %= 360;
+	if (degrees < 0)
+		degrees += 360;
 	nineties = degrees / 90;
 	remainder = (degrees % 90);
 
@@ -487,15 +491,36 @@ static int dw_mci_rk3576_parse_dt(struct dw_mci *host)
 	return 0;
 }
 
+static int dw_mci_rv1103b_init_phase(struct dw_mci *host)
+{
+	struct dw_mci_rockchip_priv_data *priv = host->priv;
+
+	if (mci_readl(host, USRID) != RV1103B_USRID_INTER_PHASE) {
+		dev_err(host->dev, "unsupported RV1103B MMC phase controller ID\n");
+		return -ENODEV;
+	}
+	priv->internal_phase = true;
+	return 0;
+}
+
 static int dw_mci_rockchip_init(struct dw_mci *host)
 {
 	struct dw_mci_rockchip_priv_data *priv = host->priv;
+	bool rv1103b = of_device_is_compatible(host->dev->of_node,
+					    "rockchip,rv1103b-dw-mshc");
 	int ret, i;
+
+	if (rv1103b) {
+		ret = dw_mci_rv1103b_init_phase(host);
+		if (ret)
+			return ret;
+	}
 
 	/* It is slot 8 on Rockchip SoCs */
 	host->sdio_id0 = 8;
 
-	if (of_device_is_compatible(host->dev->of_node, "rockchip,rk3288-dw-mshc")) {
+	if (rv1103b ||
+	    of_device_is_compatible(host->dev->of_node, "rockchip,rk3288-dw-mshc")) {
 		host->bus_hz /= RK3288_CLKGEN_DIV;
 
 		/* clock driver will fail if the clock is less than the lowest source clock
@@ -514,7 +539,7 @@ static int dw_mci_rockchip_init(struct dw_mci *host)
 			dev_warn(host->dev, "no valid minimum freq: %d\n", ret);
 	}
 
-	if (priv->internal_phase)
+	if (priv->internal_phase && !rv1103b)
 		mci_writel(host, MISC_CON, MEM_CLK_AUTOGATE_ENABLE);
 
 	return 0;
@@ -541,7 +566,17 @@ static const struct dw_mci_drv_data rk3576_drv_data = {
 	.init			= dw_mci_rockchip_init,
 };
 
+static const struct dw_mci_drv_data rv1103b_drv_data = {
+	.common_caps		= MMC_CAP_CMD23,
+	.set_ios		= dw_mci_rk3288_set_ios,
+	.execute_tuning		= dw_mci_rk3288_execute_tuning,
+	.parse_dt		= dw_mci_common_parse_dt,
+	.init			= dw_mci_rockchip_init,
+};
+
 static const struct of_device_id dw_mci_rockchip_match[] = {
+	{ .compatible = "rockchip,rv1103b-dw-mshc",
+		.data = &rv1103b_drv_data },
 	{ .compatible = "rockchip,rk2928-dw-mshc",
 		.data = &rk2928_drv_data },
 	{ .compatible = "rockchip,rk3288-dw-mshc",
