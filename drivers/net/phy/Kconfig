@@ -438,6 +438,12 @@ config RENESAS_PHY
 	help
 	  Supports the Renesas PHYs uPD60620 and uPD60620A.
 
+config RK630_PHY
+	tristate "Rockchip RK630 and RV1103B integrated Ethernet PHY"
+	help
+	  Supports PHY ID 00441400, including the integrated T22 PHY used
+	  on RV1103B with OTP TX-level calibration and cable adaptation.
+
 config ROCKCHIP_PHY
 	tristate "Rockchip Ethernet PHYs"
 	help
