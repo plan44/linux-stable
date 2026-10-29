@@ -140,6 +140,7 @@ struct rockchip_chg_det_reg {
  */
 struct rockchip_usb2phy_port_cfg {
 	struct usb2phy_reg	phy_sus;
+	struct usb2phy_reg	bvalid_grf_sel;
 	struct usb2phy_reg	bvalid_det_en;
 	struct usb2phy_reg	bvalid_det_st;
 	struct usb2phy_reg	bvalid_det_clr;
@@ -210,6 +211,8 @@ struct rockchip_usb2phy_port {
 	unsigned int	port_id;
 	bool		suspended;
 	bool		vbus_attached;
+	bool		vbus_always_on;
+	bool		force_vbus_valid;
 	bool            host_disconnect;
 	int		bvalid_irq;
 	int		id_irq;
@@ -253,6 +256,7 @@ struct rockchip_usb2phy {
 	struct clk_hw	clk480m_hw;
 	int			num_clks;
 	struct reset_control	*phy_reset;
+	struct reset_control_bulk_data rv1103b_resets[2];
 	enum usb_chg_state	chg_state;
 	enum power_supply_type	chg_type;
 	u8			dcd_retries;
@@ -510,7 +514,8 @@ static int rockchip_usb2phy_init(struct phy *phy)
 	mutex_lock(&rport->mutex);
 
 	if (rport->port_id == USB2PHY_PORT_OTG) {
-		if (rport->mode != USB_DR_MODE_HOST &&
+		if (!rport->vbus_always_on &&
+		    rport->mode != USB_DR_MODE_HOST &&
 		    rport->mode != USB_DR_MODE_UNKNOWN) {
 			/* clear bvalid status and enable bvalid detect irq */
 			ret = property_enable(rphy->grf,
@@ -615,8 +620,11 @@ static int rockchip_usb2phy_power_on(struct phy *phy)
 	 * remain powered.
 	 */
 	ret = rockchip_usb2phy_reset(rphy);
-	if (ret)
+	if (ret) {
+		property_enable(rphy->grf, &rport->port_cfg->phy_sus, true);
+		clk_disable_unprepare(rphy->clk480m);
 		return ret;
+	}
 
 	/* waiting for the utmi_clk to become stable */
 	usleep_range(1500, 2000);
@@ -651,6 +659,7 @@ static int rockchip_usb2phy_exit(struct phy *phy)
 	struct rockchip_usb2phy_port *rport = phy_get_drvdata(phy);
 
 	if (rport->port_id == USB2PHY_PORT_OTG &&
+	    !rport->vbus_always_on &&
 	    rport->mode != USB_DR_MODE_HOST &&
 	    rport->mode != USB_DR_MODE_UNKNOWN) {
 		cancel_delayed_work_sync(&rport->otg_sm_work);
@@ -679,7 +688,7 @@ static void rockchip_usb2phy_otg_sm_work(struct work_struct *work)
 	unsigned long delay;
 	bool vbus_attach, sch_work, notify_charger;
 
-	vbus_attach = property_enabled(rphy->grf,
+	vbus_attach = rport->force_vbus_valid || property_enabled(rphy->grf,
 				       &rport->port_cfg->utmi_bvalid);
 
 	sch_work = false;
@@ -830,7 +839,8 @@ static void rockchip_chg_detect_work(struct work_struct *work)
 	bool is_dcd, tmout, vout, vbus_attach;
 	unsigned long delay;
 
-	vbus_attach = property_enabled(rphy->grf, &rport->port_cfg->utmi_bvalid);
+	vbus_attach = rport->force_vbus_valid || property_enabled(rphy->grf,
+						   &rport->port_cfg->utmi_bvalid);
 
 	dev_dbg(&rport->phy->dev, "chg detection work state = %d\n",
 		rphy->chg_state);
@@ -1307,8 +1317,25 @@ static int rockchip_usb2phy_otg_port_init(struct rockchip_usb2phy *rphy,
 
 	mutex_init(&rport->mutex);
 
+	/* RV1103B boards without VBUS sensing use the GRF override. */
+	if (rport->port_cfg->bvalid_grf_sel.enable) {
+		rport->force_vbus_valid = of_property_read_bool(child_np,
+						"rockchip,force-vbus-valid");
+		rport->vbus_always_on = of_property_read_bool(child_np,
+						"rockchip,vbus-always-on");
+		ret = property_enable(rphy->grf, &rport->port_cfg->bvalid_grf_sel,
+				      rport->force_vbus_valid);
+		if (ret)
+			return ret;
+		if (rport->vbus_always_on) {
+			ret = extcon_set_state_sync(rphy->edev, EXTCON_USB, true);
+			if (ret)
+				return ret;
+		}
+	}
+
 	rport->mode = of_usb_get_dr_mode_by_phy(child_np, -1);
-	if (rport->mode == USB_DR_MODE_HOST ||
+	if (rport->vbus_always_on || rport->mode == USB_DR_MODE_HOST ||
 	    rport->mode == USB_DR_MODE_UNKNOWN) {
 		ret = 0;
 		goto out;
@@ -1417,7 +1444,16 @@ static int rockchip_usb2phy_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	rphy->phy_reset = devm_reset_control_get_optional(dev, "phy");
+	if (of_device_is_compatible(np, "rockchip,rv1103b-usb2phy")) {
+		rphy->rv1103b_resets[0].id = "u2phy";
+		rphy->rv1103b_resets[1].id = "u2phy-apb";
+		ret = devm_reset_control_bulk_get_exclusive(dev, 2,
+						 rphy->rv1103b_resets);
+		if (ret)
+			return dev_err_probe(dev, ret, "failed to get PHY resets\n");
+	} else {
+		rphy->phy_reset = devm_reset_control_get_optional(dev, "phy");
+	}
 	if (IS_ERR(rphy->phy_reset))
 		return PTR_ERR(rphy->phy_reset);
 
@@ -1506,6 +1542,50 @@ next_child:
 put_child:
 	of_node_put(child_np);
 	return ret;
+}
+
+static void rv1103b_usb2phy_assert_resets(void *data)
+{
+	struct rockchip_usb2phy *rphy = data;
+
+	reset_control_bulk_assert(2, rphy->rv1103b_resets);
+}
+
+static int rv1103b_usb2phy_tuning(struct rockchip_usb2phy *rphy)
+{
+	static const struct { unsigned int reg, mask, val; } tuning[] = {
+		{ 0x030, GENMASK(2, 0), 7 }, /* pre-emphasis in all HS states */
+		{ 0x040, GENMASK(5, 3), BIT(3) }, /* pre-emphasis strength */
+		{ 0x064, GENMASK(6, 3), 0 }, /* 112.5 mV squelch threshold */
+		{ 0x100, BIT(6), 0 }, /* differential receiver off */
+		{ 0x11c, GENMASK(4, 0), 0x17 }, /* 45 ohm ODT */
+		{ 0x124, GENMASK(4, 2), 3 << 2 }, /* HS eye height, 462 mV */
+		{ 0x1a4, GENMASK(7, 4), BIT(4) }, /* bypass squelch calibration */
+		{ 0x1b4, GENMASK(7, 4), BIT(4) },
+		{ 0x070, BIT(2), BIT(2) }, /* single-ended disconnect detection */
+		{ 0x060, GENMASK(1, 0), 0 }, /* 675 mV disconnect threshold */
+		{ 0x064, BIT(7), BIT(7) },
+		{ 0x068, BIT(0), 0 },
+	};
+	unsigned int i;
+	int ret;
+
+	ret = reset_control_bulk_deassert(2, rphy->rv1103b_resets);
+	if (ret)
+		return ret;
+	ret = devm_add_action_or_reset(rphy->dev, rv1103b_usb2phy_assert_resets, rphy);
+	if (ret)
+		return ret;
+
+	/* Analog registers retain bits outside each tuning field. */
+	for (i = 0; i < ARRAY_SIZE(tuning); i++) {
+		ret = regmap_update_bits(rphy->phy_base, tuning[i].reg,
+					 tuning[i].mask, tuning[i].val);
+		if (ret)
+			return ret;
+	}
+
+	return 0;
 }
 
 static int rk3128_usb2phy_tuning(struct rockchip_usb2phy *rphy)
@@ -2281,6 +2361,50 @@ static const struct rockchip_usb2phy_cfg rv1108_phy_cfgs[] = {
 	{ /* sentinel */ }
 };
 
+static const struct rockchip_usb2phy_cfg rv1103b_phy_cfgs[] = {
+	{
+		.reg = 0x20e10000,
+		.num_ports	= 1,
+		.phy_tuning	= rv1103b_usb2phy_tuning,
+		.clkout_ctl	= { 0x50058, 4, 4, 1, 0 },
+		.port_cfgs	= {
+			[USB2PHY_PORT_OTG] = {
+				.phy_sus	= { 0x50050, 8, 0, 0, 0x1d1 },
+				.bvalid_det_en	= { 0x50100, 2, 2, 0, 1 },
+				.bvalid_det_st	= { 0x50104, 2, 2, 0, 1 },
+				.bvalid_det_clr = { 0x50108, 2, 2, 0, 1 },
+				.bvalid_grf_sel	= { 0x50058, 15, 14, 0, 3 },
+				.idfall_det_en	= { 0x50100, 5, 5, 0, 1 },
+				.idfall_det_st	= { 0x50104, 5, 5, 0, 1 },
+				.idfall_det_clr = { 0x50108, 5, 5, 0, 1 },
+				.idrise_det_en	= { 0x50100, 4, 4, 0, 1 },
+				.idrise_det_st	= { 0x50104, 4, 4, 0, 1 },
+				.idrise_det_clr = { 0x50108, 4, 4, 0, 1 },
+				.ls_det_en	= { 0x50100, 0, 0, 0, 1 },
+				.ls_det_st	= { 0x50104, 0, 0, 0, 1 },
+				.ls_det_clr	= { 0x50108, 0, 0, 0, 1 },
+				.utmi_avalid	= { 0x50060, 10, 10, 0, 1 },
+				.utmi_bvalid	= { 0x50060, 9, 9, 0, 1 },
+				.utmi_id	= { 0x50060, 6, 6, 0, 1 },
+				.utmi_ls	= { 0x50060, 5, 4, 0, 1 },
+			},
+		},
+		.chg_det = {
+			.opmode	= { 0x50050, 8, 0, 0, 0x1d7 },
+			.cp_det		= { 0x50060, 13, 13, 0, 1 },
+			.dcp_det	= { 0x50060, 12, 12, 0, 1 },
+			.dp_det		= { 0x50060, 14, 14, 0, 1 },
+			.idm_sink_en	= { 0x50058, 8, 8, 0, 1 },
+			.idp_sink_en	= { 0x50058, 7, 7, 0, 1 },
+			.idp_src_en	= { 0x50058, 9, 9, 0, 1 },
+			.rdm_pdwn_en	= { 0x50058, 10, 10, 0, 1 },
+			.vdm_src_en	= { 0x50058, 12, 12, 0, 1 },
+			.vdp_src_en	= { 0x50058, 11, 11, 0, 1 },
+		},
+	},
+	{ /* sentinel */ }
+};
+
 static const struct of_device_id rockchip_usb2phy_dt_match[] = {
 	{ .compatible = "rockchip,px30-usb2phy", .data = &rk3328_phy_cfgs },
 	{ .compatible = "rockchip,rk3128-usb2phy", .data = &rk3128_phy_cfgs },
@@ -2293,6 +2417,7 @@ static const struct of_device_id rockchip_usb2phy_dt_match[] = {
 	{ .compatible = "rockchip,rk3568-usb2phy", .data = &rk3568_phy_cfgs },
 	{ .compatible = "rockchip,rk3576-usb2phy", .data = &rk3576_phy_cfgs },
 	{ .compatible = "rockchip,rk3588-usb2phy", .data = &rk3588_phy_cfgs },
+	{ .compatible = "rockchip,rv1103b-usb2phy", .data = &rv1103b_phy_cfgs },
 	{ .compatible = "rockchip,rv1108-usb2phy", .data = &rv1108_phy_cfgs },
 	{}
 };
