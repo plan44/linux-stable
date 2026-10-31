@@ -51,6 +51,8 @@ struct uart_8250_dma {
 	unsigned char		tx_running;
 	unsigned char		tx_err;
 	unsigned char		rx_running;
+	/* Platform explicitly requests DMA transmit with interrupt-driven receive. */
+	bool			tx_only;
 };
 
 struct old_serial_port {

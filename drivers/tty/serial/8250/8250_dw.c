@@ -56,6 +56,7 @@
 #define DW_UART_QUIRK_IS_DMA_FC		BIT(3)
 #define DW_UART_QUIRK_APMC0D08		BIT(4)
 #define DW_UART_QUIRK_CPR_VALUE		BIT(5)
+#define DW_UART_QUIRK_TX_ONLY_DMA		BIT(6)
 
 struct dw8250_platform_data {
 	u8 usr_reg;
@@ -276,7 +277,7 @@ static int dw8250_handle_irq(struct uart_port *p)
 	 * This problem has only been observed so far when not in DMA mode
 	 * so we limit the workaround only to non-DMA mode.
 	 */
-	if (!up->dma && rx_timeout) {
+	if ((!up->dma || !up->dma->rxchan) && rx_timeout) {
 		uart_port_lock_irqsave(p, &flags);
 		status = serial_lsr_in(up);
 
@@ -461,6 +462,9 @@ static void dw8250_quirks(struct uart_port *p, struct dw8250_data *data)
 {
 	unsigned int quirks = data->pdata ? data->pdata->quirks : 0;
 	u32 cpr_value = data->pdata ? data->pdata->cpr_value : 0;
+
+	if (quirks & DW_UART_QUIRK_TX_ONLY_DMA)
+		data->data.dma.tx_only = true;
 
 	if (quirks & DW_UART_QUIRK_CPR_VALUE)
 		data->data.cpr_value = cpr_value;
@@ -745,6 +749,12 @@ static const struct dw8250_platform_data dw8250_dw_apb = {
 	.usr_reg = DW_UART_USR,
 };
 
+/* RKDMA has no general pause operation for the generic 8250 RX path. */
+static const struct dw8250_platform_data dw8250_rv1103b = {
+	.usr_reg = DW_UART_USR,
+	.quirks = DW_UART_QUIRK_TX_ONLY_DMA,
+};
+
 static const struct dw8250_platform_data dw8250_octeon_3860_data = {
 	.usr_reg = OCTEON_UART_USR,
 	.quirks = DW_UART_QUIRK_OCTEON,
@@ -767,6 +777,7 @@ static const struct dw8250_platform_data dw8250_skip_set_rate_data = {
 };
 
 static const struct of_device_id dw8250_of_match[] = {
+	{ .compatible = "rockchip,rv1103b-uart", .data = &dw8250_rv1103b },
 	{ .compatible = "snps,dw-apb-uart", .data = &dw8250_dw_apb },
 	{ .compatible = "cavium,octeon-3860-uart", .data = &dw8250_octeon_3860_data },
 	{ .compatible = "marvell,armada-38x-uart", .data = &dw8250_armada_38x_data },

@@ -9,6 +9,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/dmapool.h>
 #include <linux/interrupt.h>
+#include <linux/iopoll.h>
 #include <linux/io-64-nonatomic-hi-lo.h>
 #include <linux/module.h>
 #include <linux/of_device.h>
@@ -20,7 +21,7 @@
 
 #include "virt-dma.h"
 
-/* Bring-up only: Kconfig BROKEN gates unresolved stop/pause semantics. */
+/* Initial integration exposes UART TX only; RX needs a flush-aware client. */
 #define DRIVER_NAME			"rk-dma"
 #define DMA_MAX_SIZE			(0x1000000)
 #define LLI_BLOCK_SIZE			(SZ_4K)
@@ -30,8 +31,7 @@
 	(BIT(DMA_SLAVE_BUSWIDTH_1_BYTE)  | \
 	 BIT(DMA_SLAVE_BUSWIDTH_2_BYTES) | \
 	 BIT(DMA_SLAVE_BUSWIDTH_4_BYTES) | \
-	 BIT(DMA_SLAVE_BUSWIDTH_8_BYTES) | \
-	 BIT(DMA_SLAVE_BUSWIDTH_16_BYTES))
+	 BIT(DMA_SLAVE_BUSWIDTH_8_BYTES))
 
 #define HIWORD_UPDATE(v, h, l)	(((v) << (l)) | (GENMASK((h), (l)) << 16))
 #define GENMASK_VAL(v, h, l)	(((v) & GENMASK(h, l)) >> l)
@@ -435,6 +435,7 @@ struct rk_dma_dev {
 	bool			irq_registered;
 	u32			bus_width;
 	u32			dma_channels;
+	u32			physical_channels;
 	u32			dma_requests;
 	u32			version;
 	spinlock_t		lock; /* lock for ch and lch */
@@ -445,11 +446,29 @@ static struct rk_dma_chan *to_rk_chan(struct dma_chan *chan)
 	return container_of(chan, struct rk_dma_chan, vc.chan);
 }
 
-static void rk_dma_terminate_chan(struct rk_dma_lch *l, struct rk_dma_dev *d)
+static int rk_dma_terminate_chan(struct rk_dma_lch *l, struct rk_dma_dev *d)
 {
+	unsigned int i;
+	u32 value;
+	int ret;
+
+	/* Reset the logical channel, then wait for any bound AXI work to drain. */
 	writel(LCH_CTL_CH_DIS, RK_DMA_LCH_CTL);
 	writel(0x0, RK_DMA_LCH_IE);
+	readl(RK_DMA_LCH_CTL);
+	for (i = 0; i < d->physical_channels; i++) {
+		ret = readl_poll_timeout_atomic(RK_DMA_PCHn_BIND(i), value,
+			!(value & PCH_BIND_BIND_VLD_MASK) ||
+			GENMASK_VAL(value, 6, 1) != l->id, 1, 1000);
+		if (ret) {
+			dev_err_ratelimited(d->slave.dev,
+				"channel %u still bound to physical channel %u\n",
+				l->id, i);
+			return ret;
+		}
+	}
 	writel(readl(RK_DMA_LCH_IS), RK_DMA_LCH_IS);
+	return 0;
 }
 
 static int rk_dma_set_perisel(struct dma_chan *chan, enum dma_transfer_direction dir);
@@ -484,9 +503,15 @@ static int rk_dma_init(struct rk_dma_dev *d)
 {
 	struct device *dev = d->slave.dev;
 	int i, lch, pch, buswidth, maxburst;
-	u32 cap0, cap1, ver;
+	u32 cap0, cap1, ver, value;
+	int ret;
 
 	writel(CMN_CFG_EN | CMN_CFG_IE_DIS, RK_DMA_CMN_CFG);
+	writel(CMN_CFG_SRST, RK_DMA_CMN_CFG);
+	ret = readl_poll_timeout_atomic(RK_DMA_CMN_CFG, value,
+				       !(value & BIT(1)), 1, 1000);
+	if (ret)
+		return ret;
 
 	ver  = readl(RK_DMA_CMN_VER);
 	cap0 = readl(RK_DMA_CMN_CAP0);
@@ -498,12 +523,13 @@ static int rk_dma_init(struct rk_dma_dev *d)
 	buswidth = CMN_AXI_SIZE(cap1);
 	maxburst = CMN_AXI_LEN(cap1);
 
-	if (lch > 64 || pch > 16 || buswidth > 16)
+	if (lch > 64 || pch > 16 || buswidth > 8)
 		return -EINVAL;
 
 	d->version = ver;
 	d->bus_width = buswidth;
 	d->dma_channels = CMN_LCH_NUM(cap0);
+	d->physical_channels = pch;
 	d->dma_requests = CMN_LCH_NUM(cap0);
 
 	writel(0xffffffff, RK_DMA_CMN_DYNCTL);
@@ -1012,7 +1038,7 @@ static int rk_dma_config(struct dma_chan *chan, struct dma_slave_config *cfg)
 {
 	struct rk_dma_chan *c = to_rk_chan(chan);
 
-	if (!cfg)
+	if (!cfg || cfg->direction != DMA_MEM_TO_DEV)
 		return -EINVAL;
 
 	memcpy(&c->slave_cfg, cfg, sizeof(*cfg));
@@ -1026,6 +1052,7 @@ static int rk_dma_terminate_all(struct dma_chan *chan)
 	struct rk_dma_dev *d = to_rk_dma(chan->device);
 	struct rk_dma_lch *l = c->lch;
 	unsigned long flags;
+	int ret = 0;
 	LIST_HEAD(head);
 
 	dev_dbg(d->slave.dev, "vch-%px: terminate all\n", &c->vc);
@@ -1033,18 +1060,20 @@ static int rk_dma_terminate_all(struct dma_chan *chan)
 	spin_lock_irqsave(&c->vc.lock, flags);
 	vchan_get_all_descriptors(&c->vc, &head);
 	if (l) {
-		/* Hardware quiescence still needs review; Kconfig remains BROKEN. */
-		rk_dma_terminate_chan(l, d);
+		ret = rk_dma_terminate_chan(l, d);
+		if (ret)
+			goto unlock;
 		if (l->ds_run)
 			vchan_terminate_vdesc(&l->ds_run->vd);
 
 		l->ds_run = NULL;
 	}
+unlock:
 	spin_unlock_irqrestore(&c->vc.lock, flags);
 
 	vchan_dma_desc_free_list(&c->vc, &head);
 
-	return 0;
+	return ret;
 }
 
 static void rk_dma_free_desc(struct virt_dma_desc *vd)
@@ -1071,6 +1100,9 @@ static struct dma_chan *rk_of_dma_simple_xlate(struct of_phandle_args *dma_spec,
 	struct rk_dma_dev *d = ofdma->of_dma_data;
 
 	if (dma_spec->args_count != 1 || dma_spec->args[0] >= d->dma_requests)
+		return NULL;
+	/* TRM table 10-1: UART0/1/2 TX requests are 1/3/5. */
+	if (dma_spec->args[0] > 5 || !(dma_spec->args[0] & 1))
 		return NULL;
 	return dma_get_slave_channel(&d->chans[dma_spec->args[0]].vc.chan);
 }
@@ -1109,8 +1141,6 @@ static int rk_dma_probe(struct platform_device *pdev)
 	spin_lock_init(&d->lock);
 	INIT_LIST_HEAD(&d->slave.channels);
 	dma_cap_set(DMA_SLAVE, d->slave.cap_mask);
-	dma_cap_set(DMA_MEMCPY, d->slave.cap_mask);
-	dma_cap_set(DMA_CYCLIC, d->slave.cap_mask);
 	dma_cap_set(DMA_PRIVATE, d->slave.cap_mask);
 	d->slave.dev = &pdev->dev;
 	d->slave.device_free_chan_resources = rk_dma_free_chan_resources;
@@ -1124,7 +1154,7 @@ static int rk_dma_probe(struct platform_device *pdev)
 	d->slave.device_synchronize = rk_dma_synchronize;
 	d->slave.src_addr_widths = RK_DMA_BUSWIDTHS;
 	d->slave.dst_addr_widths = RK_DMA_BUSWIDTHS;
-	d->slave.directions = BIT(DMA_MEM_TO_MEM) | BIT(DMA_MEM_TO_DEV) | BIT(DMA_DEV_TO_MEM);
+	d->slave.directions = BIT(DMA_MEM_TO_DEV);
 	d->slave.residue_granularity = DMA_RESIDUE_GRANULARITY_DESCRIPTOR;
 
 	platform_set_drvdata(pdev, d);

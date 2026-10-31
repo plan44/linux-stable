@@ -58,15 +58,15 @@ config DMA_OF
 
 #devices
 config ROCKCHIP_DMA
-	tristate "Rockchip RV1103B DMA controller (bring-up)"
+	tristate "Rockchip RV1103B UART transmit DMA controller"
 	depends on ARCH_ROCKCHIP || COMPILE_TEST
-	depends on BROKEN
 	select DMA_ENGINE
 	select DMA_VIRTUAL_CHANNELS
 	help
-	  RV1103B-specific Rockchip DMA controller. Currently restricted to
-	  compile/testing while hardware stop, pause and progress writeback
-	  semantics are being verified. Not the ARM PL330 controller.
+	  RV1103B-specific Rockchip DMA controller, initially exposing only
+	  UART transmit request lines. The UART driver keeps receive in PIO
+	  mode until a flush-based receive path is implemented. No general
+	  pause/resume capability is advertised. Not the ARM PL330 controller.
 
 config ALTERA_MSGDMA
 	tristate "Altera / Intel mSGDMA Engine"
